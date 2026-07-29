@@ -1,0 +1,107 @@
+# Publish a release on a semver tag.
+#
+#   git tag -a v0.1.0 -m 'v0.1.0' && git push origin v0.1.0
+#
+# Two halves, deliberately separate:
+#
+#   goreleaser  binaries, archives, checksums, the GitHub release
+#   buildx      the container image, from the SAME Dockerfile ci.yml publishes from,
+#               so a release image and a `latest` image cannot drift apart
+#
+# Tags published here:
+#
+#	:v1.2.3    always
+#	:v1.2      :v1     moved, but only for a real release, never a prerelease
+#
+# `latest` is NOT touched here. It tracks the tip of main and is moved by ci.yml.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release and upload artefacts
+      packages: write # push to ghcr.io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # goreleaser derives the changelog from history, so a shallow clone is
+          # not enough.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Never ship a tag that does not pass; the tag is immutable once pushed.
+      # e2e included, because a release whose quickstart is broken is worse than no
+      # release.
+      - run: make tools
+      - run: make lint
+      - run: make test-race
+      - run: make e2e
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # metadata-action rather than hand-rolled shell, because it gets the one rule
+      # that is easy to get wrong right: a prerelease tag publishes vX.Y.Z but must
+      # not move vX.Y or vX.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # {{raw}} keeps the leading v, matching the git tag and the docs.
+          tags: |
+            type=semver,pattern={{raw}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+          labels: |
+            org.opencontainers.image.title=forwardlimit
+            org.opencontainers.image.description=Rate limiting via Traefik ForwardAuth
+            org.opencontainers.image.licenses=Apache-2.0
+          # latest belongs to main, not to releases.
+          flavor: latest=false
+
+      # No QEMU: the Dockerfile cross-compiles from BUILDPLATFORM via GOARCH.
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          {
+            echo '### Published'
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo 'Binaries and checksums are on the GitHub release.'
+          } >> "$GITHUB_STEP_SUMMARY"

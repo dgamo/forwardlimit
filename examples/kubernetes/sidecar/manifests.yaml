@@ -1,0 +1,117 @@
+# Everything the sidecar deployment needs besides the Helm values: the limiters, the
+# secret, the middleware and an Ingress that uses it.
+#
+#   kubectl apply -f manifests.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forwardlimit-config
+  namespace: traefik
+data:
+  # Mounted at /etc/forwardlimit/config.yaml. Changing it needs a restart:
+  #   kubectl -n traefik rollout restart deploy/traefik
+  # Counters live in Redis and survive that.
+  config.yaml: |
+    response:
+      status: 429
+      contentType: application/json
+      body: '{"error":"rate_limited"}'
+
+    limiters:
+      # Capacity first: header-keyed and cheap, so an over-quota caller is rejected
+      # before any body is parsed.
+      - name: tenant
+        key:
+          first:
+            - {header: [x-api-key, authorization]}
+            - {query: [api_key]}
+          hash: true
+        bucket: {rate: 200, burst: 400}
+        retryAfter: true
+
+      - name: login
+        key:
+          body: email
+          normalise: lower
+          hash: true
+        window: {limit: 15, window: 1h, block: 1h}
+        paths: ["/v1/login"]
+
+      # New, so it starts in dry run: it reports what it would have blocked without
+      # rejecting anything, and cannot affect the two limiters above.
+      - name: ip
+        key:
+          header: [CF-Connecting-IP, X-Forwarded-For]
+          normalise: ipsubnet/24
+        window: {limit: 300, window: 1m, block: 5m}
+        dryRun: true
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forwardlimit
+  namespace: traefik
+type: Opaque
+stringData:
+  # REPLACE THIS. Generate with:  openssl rand -base64 32
+  #
+  # Rotating it changes every hashed bucket, so all hashed counters effectively
+  # reset. Rotate deliberately.
+  hash-secret: "replace-me-with-32-random-bytes"
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: forwardlimit
+  namespace: traefik
+spec:
+  forwardAuth:
+    # The sidecar, in this same pod.
+    address: http://127.0.0.1:8080/check
+
+    # REQUIRED for the `login` limiter above. Without it the body never arrives and
+    # that limiter silently never applies.
+    forwardBody: true
+
+    # Above your application's own body limit: exceeding this makes Traefik answer
+    # 401, and an oversized body should get the application's rejection instead.
+    maxBodySize: 262144
+
+    # Traefik 3.4+ only. On an older version this field is REJECTED and the whole
+    # Middleware fails to load - drop it rather than downgrading anything else.
+    preserveRequestMethod: true
+
+    # Must name every header any limiter keys on. Omitting one silently disables
+    # that limiter, so keep this in step with the ConfigMap above.
+    authRequestHeaders:
+      - Content-Type
+      - Authorization
+      - X-Api-Key
+      - CF-Connecting-IP
+      - X-Forwarded-For
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+  namespace: default
+  annotations:
+    # <namespace>-<middleware-name>@kubernetescrd. The middleware lives in the
+    # traefik namespace, so it is referenced across namespaces here.
+    traefik.ingress.kubernetes.io/router.middlewares: traefik-forwardlimit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          # Attach it narrowly. forwardBody makes Traefik buffer the whole request,
+          # so never apply this to a file-upload path.
+          - path: /v1/login
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80

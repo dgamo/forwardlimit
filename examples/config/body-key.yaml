@@ -1,0 +1,35 @@
+# Keying on a JSON request body field.
+#
+# Requires two things beyond the file itself:
+#
+#   1. `forwardBody: true` on the Traefik middleware. Without it the body never
+#      reaches the service and these limiters silently never apply.
+#   2. HASH_SECRET in the environment. Without it a hashing limiter is disabled
+#      entirely - it will not fall back to storing the raw value.
+
+limiters:
+  # A window with a block rather than a bucket: someone farming accounts should
+  # stay out, not be gently paced.
+  - name: signup
+    key:
+      # A dotted path reaches nested fields: customer.contact.email.
+      body: email
+      # Case-fold, or User@Example.com gets its own bucket.
+      normalise: lower
+      # Mandatory for anything sensitive: the value becomes a storage key.
+      hash: true
+    window: {limit: 5, window: 1h, block: 1h}
+    # Scope it: body inspection makes Traefik buffer the request, so cover only the
+    # routes that need it - never a file-upload endpoint.
+    paths: ["/v1/signup"]
+
+  # Worth limiting tightly because each code costs money to send, which is what
+  # makes it worth abusing. A second body-keyed limiter costs no extra parsing.
+  - name: otp
+    key:
+      body: phone_number
+      # Reduce to digits, so "07700 900-123" and "07700900123" share a bucket.
+      normalise: digits
+      hash: true
+    window: {limit: 3, window: 1h, block: 2h}
+    paths: ["/v1/verify"]

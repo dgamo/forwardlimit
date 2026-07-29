@@ -1,0 +1,287 @@
+# forwardlimit as its own Deployment, reached by Traefik over the network.
+#
+#   kubectl apply -f manifests.yaml
+#
+# READ THIS FIRST. ForwardAuth fails CLOSED: if this Service has no ready endpoints,
+# Traefik answers 5xx and the request is refused - and unlike the sidecar shape, that
+# can happen while Traefik itself is perfectly healthy. This puts one more dependency
+# on the request path.
+#
+# Everything below is what makes that survivable: several replicas spread across
+# nodes, a disruption budget, tight timeouts and a readiness gate. It is still a
+# deliberate trade, not a default. Prefer ../sidecar unless you cannot modify the
+# Traefik pod spec.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forwardlimit
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forwardlimit-config
+  namespace: forwardlimit
+data:
+  config.yaml: |
+    limiters:
+      - name: tenant
+        key:
+          first:
+            - {header: [x-api-key, authorization]}
+            - {query: [api_key]}
+          hash: true
+        bucket: {rate: 200, burst: 400}
+        retryAfter: true
+
+      - name: ip
+        key:
+          header: [CF-Connecting-IP, X-Forwarded-For]
+          normalise: ipsubnet/24
+        window: {limit: 300, window: 1m, block: 5m}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forwardlimit
+  namespace: forwardlimit
+type: Opaque
+stringData:
+  # REPLACE THIS.  openssl rand -base64 32
+  hash-secret: "replace-me-with-32-random-bytes"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forwardlimit
+  namespace: forwardlimit
+spec:
+  # Three, not two: with a PDB of maxUnavailable 1, three replicas survive a node
+  # drain and a rolling update at the same time.
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: forwardlimit
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never go below full capacity during an update: this is on the request path.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: forwardlimit
+    spec:
+      # Spread across nodes, so losing one node cannot take a majority.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: forwardlimit
+
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: forwardlimit
+          image: ghcr.io/dgamo/forwardlimit:v0.1.0
+          args: ["-config", "/etc/forwardlimit/config.yaml"]
+
+          ports:
+            - name: http
+              containerPort: 8080
+
+          env:
+            # Reachable from Traefik's pods, so it binds the pod IP rather than
+            # localhost. Restrict who may reach it with a NetworkPolicy - see below.
+            - name: LISTEN_ADDR
+              value: ":8080"
+            - name: REDIS_ADDRS
+              value: "redis-master.redis.svc.cluster.local:6379"
+            - name: REDIS_KEY_PREFIX
+              value: "forwardlimit:prod:"
+            - name: LOG_FORMAT
+              value: "json"
+            - name: HASH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: forwardlimit
+                  key: hash-secret
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/forwardlimit
+              readOnly: true
+
+          # Process health only, never Redis - a Redis outage must not take these
+          # pods out of service, because that would turn fail-open into fail-closed.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 200m
+              memory: 64Mi
+            limits:
+              # No CPU limit: throttling adds latency to every request on the
+              # protected route.
+              memory: 128Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          # Give in-flight checks time to finish before the process goes away.
+          # SHUTDOWN_TIMEOUT defaults to 10s, so allow a little more.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+
+      terminationGracePeriodSeconds: 30
+
+      volumes:
+        - name: config
+          configMap:
+            name: forwardlimit-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forwardlimit
+  namespace: forwardlimit
+spec:
+  selector:
+    app.kubernetes.io/name: forwardlimit
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: forwardlimit
+  namespace: forwardlimit
+spec:
+  # A voluntary disruption must never take the last replica: without this, draining
+  # a node can leave the Service with no endpoints, and ForwardAuth then fails closed.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: forwardlimit
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: forwardlimit
+  namespace: forwardlimit
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: forwardlimit
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Deliberately conservative: this is on the request path, and scaling up
+          # late costs latency on every limited request.
+          averageUtilization: 60
+  behavior:
+    scaleDown:
+      # Slow to shrink, so a traffic trough does not leave too little headroom for
+      # the next burst.
+      stabilizationWindowSeconds: 300
+---
+# Only Traefik may reach /check. It is unauthenticated by design, so the network is
+# what restricts it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: forwardlimit
+  namespace: forwardlimit
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: forwardlimit
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Allow your metrics scraper as well; adjust the selector to match it.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: forwardlimit
+  namespace: traefik
+spec:
+  forwardAuth:
+    # The Service, not localhost. This is the extra network hop.
+    address: http://forwardlimit.forwardlimit.svc.cluster.local:8080/check
+    forwardBody: true
+    maxBodySize: 262144
+    # Traefik 3.4+ only. On an older version this field is REJECTED and the whole
+    # Middleware fails to load - drop it rather than downgrading anything else.
+    preserveRequestMethod: true
+    authRequestHeaders:
+      - Content-Type
+      - Authorization
+      - X-Api-Key
+      - CF-Connecting-IP
+      - X-Forwarded-For
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+  namespace: default
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: traefik-forwardlimit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /v1/login
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80

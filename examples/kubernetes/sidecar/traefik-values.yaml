@@ -1,0 +1,110 @@
+# Values for the official Traefik Helm chart, adding forwardlimit as a native
+# sidecar in every Traefik pod.
+#
+#   helm repo add traefik https://traefik.github.io/charts
+#   helm upgrade --install traefik traefik/traefik \
+#     -n traefik --create-namespace -f traefik-values.yaml
+#
+# The recommended shape, for one reason: ForwardAuth fails CLOSED. In the same pod,
+# "unreachable" cannot happen independently of "this Traefik pod is already broken",
+# and a failing readiness probe removes the pod from the load balancer.
+
+deployment:
+  # A native sidecar: initContainer + restartPolicy: Always, needing Kubernetes
+  # 1.29+. Not an ordinary container, because it must start BEFORE Traefik and stop
+  # AFTER it - Traefik keeps serving while it drains, and a sidecar stopped first
+  # would turn that window into a burst of 500s.
+  initContainers:
+    - name: forwardlimit
+      image: ghcr.io/dgamo/forwardlimit:v0.1.0
+      restartPolicy: Always
+      args: ["-config", "/etc/forwardlimit/config.yaml"]
+
+      env:
+        # Localhost only: /check is unauthenticated by design, so nothing off-pod
+        # should reach it.
+        - name: LISTEN_ADDR
+          value: "127.0.0.1:8080"
+
+        - name: REDIS_ADDRS
+          value: "redis-master.redis.svc.cluster.local:6379"
+        # - name: REDIS_MODE
+        #   value: "cluster"
+        # - name: REDIS_TLS_ENABLED
+        #   value: "true"
+
+        # Namespaces every key, so sharing a Redis with other workloads is safe.
+        - name: REDIS_KEY_PREFIX
+          value: "forwardlimit:prod:"
+
+        - name: LOG_FORMAT
+          value: "json"
+
+        # A Secret, never the ConfigMap.
+        - name: HASH_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: forwardlimit
+              key: hash-secret
+
+      volumeMounts:
+        - name: forwardlimit-config
+          mountPath: /etc/forwardlimit
+          readOnly: true
+
+      # Process health only, never Redis: a pod is Ready only when every container
+      # is, so a Redis-aware probe would pull the whole edge out during an outage.
+      # This probe is also what bounds ForwardAuth's fail-closed behaviour.
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 2
+        periodSeconds: 5
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        periodSeconds: 10
+        # A wedged process is the one failure mode the service cannot fail open
+        # through.
+        failureThreshold: 3
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi
+        limits:
+          # No CPU limit: throttling the limiter adds latency to every request on
+          # the protected route.
+          memory: 128Mi
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        capabilities:
+          drop: ["ALL"]
+
+  additionalVolumes:
+    - name: forwardlimit-config
+      configMap:
+        name: forwardlimit-config
+
+metrics:
+  prometheus:
+    service:
+      enabled: true
+
+# ---------------------------------------------------------------------------
+# If you use an HPA on Traefik: a sidecar changes the pod's total requests, so a
+# target based on averageUtilization is now measuring a different denominator and
+# will scale at the wrong point. Re-tune it, or scope the metric to the proxy:
+#
+#   metrics:
+#     - type: ContainerResource
+#       containerResource:
+#         name: cpu
+#         container: traefik
+#         target: {type: Utilization, averageUtilization: 70}
+# ---------------------------------------------------------------------------

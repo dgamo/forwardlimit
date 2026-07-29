@@ -1,0 +1,91 @@
+# A complete standalone-Traefik stack: proxy, forwardlimit, Redis and a backend.
+#
+#   docker compose up -d
+#   for i in 1 2 3 4; do
+#     curl -s -o /dev/null -w "$i -> %{http_code}\n" \
+#       -XPOST localhost:8000/v1/login \
+#       -H 'Content-Type: application/json' \
+#       -d '{"email":"user@example.com"}'
+#   done
+#   # 1 -> 200, 2 -> 200, 3 -> 200, 4 -> 429
+#
+# This is a demonstration, not a production template. See the notes at the bottom.
+
+name: forwardlimit-example
+
+services:
+  traefik:
+    image: traefik:v3.7
+    command:
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entryPoints.web.address=:80
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --log.level=INFO
+      - --accesslog=true
+    ports:
+      - "8000:80"     # the entrypoint under test
+      - "8080:8080"   # the dashboard, for poking around
+    volumes:
+      - ./traefik:/etc/traefik/dynamic:ro
+    depends_on:
+      forwardlimit:
+        condition: service_healthy
+
+  forwardlimit:
+    # Built from this checkout. Swap for `image: ghcr.io/dgamo/forwardlimit:v0.1.0`
+    # to use a release.
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["-config", "/etc/forwardlimit/config.yaml"]
+    environment:
+      LISTEN_ADDR: ":8080"
+      LOG_LEVEL: "debug"
+      LOG_FORMAT: "text"
+      REDIS_ADDRS: "redis:6379"
+      # Demo value. In production: a secret store, 32+ random bytes.
+      HASH_SECRET: "example-secret-do-not-use-in-production"
+    volumes:
+      - ./forwardlimit.yaml:/etc/forwardlimit/config.yaml:ro
+    ports:
+      # DEMO ONLY, and bound to loopback. It makes /metrics directly curl-able while
+      # you explore. In production publish nothing: /check is unauthenticated by
+      # design, because only the proxy beside it is meant to call it.
+      - "127.0.0.1:8081:8080"
+    healthcheck:
+      # The image is distroless: no shell, no curl, no wget. The binary probes its
+      # own /healthz instead, which is why -healthcheck exists.
+      test: ["CMD", "/forwardlimit", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    # Throwaway: no persistence, so `compose down` resets the counters.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  # Stands in for your application, and shows that a rejected request never
+  # reaches it.
+  app:
+    image: traefik/whoami:v1.10
+    command: ["--port=80"]
+
+# ---------------------------------------------------------------------------
+# Before using anything like this in production:
+#
+#   * Move HASH_SECRET out of this file.
+#   * Point REDIS_ADDRS at a Redis with persistence and a maxmemory policy.
+#   * Drop the Traefik dashboard, or put it behind authentication.
+#   * Pin image digests rather than tags.
+# ---------------------------------------------------------------------------
