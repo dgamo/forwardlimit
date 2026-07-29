@@ -1,0 +1,43 @@
+# golangci-lint v2 configuration.
+# The CI job pins the linter version so this file and the tool stay in step.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - bodyclose
+    - errcheck
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+    gosec:
+      excludes:
+        # G401/G505 concern SHA-1/MD5; we use HMAC-SHA256 only. Kept explicit
+        # so a future weak-hash addition is not silently accepted.
+        - G108 # pprof endpoint - not registered here
+
+  exclusions:
+    rules:
+      # Test files legitimately ignore errors and use fixed inputs.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+
+formatters:
+  enable:
+    - gofmt

@@ -1,0 +1,74 @@
+# A realistic multi-tenant configuration: one capacity limit that protects you, plus
+# two abuse controls, ordered by cost.
+#
+# Order matters twice over. The first limiter to reject decides the response, and
+# each preceding limiter costs a store call - so the header-keyed capacity limit goes
+# first and rejects an over-quota caller before any body is parsed.
+#
+# Needs HASH_SECRET for the two hashing limiters.
+
+# The default rejection. It is returned to the client verbatim, so it must disclose
+# nothing: no limiter name, no counts, no timing.
+response:
+  status: 429
+  contentType: application/json
+  body: '{"error":"rate_limited"}'
+
+limiters:
+  # 1. Capacity. This is the one that protects *you*: it stops a single caller
+  #    consuming everyone's headroom. A token bucket rather than a window, because a
+  #    legitimate integration must recover continuously rather than serve out a
+  #    punitive block, and because a fixed window would let a caller push twice the
+  #    limit through at the boundary.
+  - name: tenant
+    key:
+      # Credentials arrive by more than one route. A limiter that knows only the
+      # header would leave query-string callers entirely unlimited.
+      first:
+        - {header: [x-api-key, authorization]}
+        - {query: [api_key, token]}
+      hash: true
+    bucket: {rate: 200, burst: 400}
+    # A cooperating caller should be told to back off, or it will retry immediately
+    # and make the overload worse.
+    retryAfter: true
+    # A capacity limit is not an accusation, so it can afford to be honest about
+    # what happened.
+    response:
+      status: 503
+      body: '{"error":"capacity","message":"slow down"}'
+
+  # 2. Abuse control on a body value. Hashed, because the value is sensitive.
+  - name: login
+    key:
+      body: email
+      normalise: lower
+      hash: true
+    window: {limit: 15, window: 1h, block: 1h}
+    paths: ["/v1/login"]
+    # Deliberately no retryAfter: telling an adversary exactly when to return states
+    # the threshold precisely.
+
+  # 3. Abuse control on the client address, coarsened to a /24. In dry run: measure
+  #    the projected impact on real traffic before it rejects anything.
+  #
+  #    A limiter in dry run cannot affect any other, so adding this one does not
+  #    weaken the two above.
+  - name: ip
+    key:
+      header: [CF-Connecting-IP, X-Forwarded-For]
+      normalise: ipsubnet/24
+    window: {limit: 300, window: 1m, block: 5m}
+    dryRun: true
+
+  # 4. A composite: this credential *and* this network. Narrower than either alone,
+  #    so it catches one caller's traffic from one place without limiting either
+  #    dimension globally. Every part must apply, or the limiter does not.
+  - name: tenant-net
+    key:
+      separator: "|"
+      composite:
+        - {header: [x-api-key], hash: true}
+        - {header: [CF-Connecting-IP], normalise: ipsubnet/24}
+    window: {limit: 1000, window: 1m, block: 1m}
+    dryRun: true

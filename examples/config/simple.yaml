@@ -1,0 +1,18 @@
+# The smallest useful configuration: one limiter, keyed on the client address.
+#
+#   forwardlimit -config examples/config/simple.yaml
+#
+# 100 requests per minute per /24, and a caller that exceeds it stays blocked for a
+# minute after the counting window rolls over.
+
+limiters:
+  - name: ip
+    key:
+      # Ordered: the first header present wins. Put the one your edge sets first,
+      # and remember that a client-suppliable header is only trustworthy if the
+      # origin cannot be reached directly.
+      header: [CF-Connecting-IP, X-Real-IP, X-Forwarded-For]
+      # Collapse to a /24 so rotating within one network does not multiply the
+      # limit. Users behind a single NAT share a bucket, so keep the limit generous.
+      normalise: ipsubnet/24
+    window: {limit: 100, window: 1m, block: 1m}

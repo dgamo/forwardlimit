@@ -1,0 +1,64 @@
+# Traefik dynamic configuration, via the file provider. Traefik watches this
+# directory, so edits here take effect without a restart - unlike forwardlimit.yaml,
+# which is read at startup.
+
+http:
+  middlewares:
+    forwardlimit:
+      forwardAuth:
+        address: "http://forwardlimit:8080/check"
+
+        # REQUIRED for any `body:` key. Without it the body never arrives and the
+        # limiter silently never applies - the most common misconfiguration.
+        forwardBody: true
+
+        # Set it ABOVE your application's own body limit: exceeding this makes
+        # Traefik answer 401, and an oversized body should get the application's
+        # rejection instead.
+        maxBodySize: 262144
+
+        # Without this Traefik issues a GET. forwardlimit handles either, but
+        # preserving the method keeps logs honest.
+        #
+        # NEEDS TRAEFIK 3.4+. On an older version the file provider does not ignore
+        # this field, it rejects the entire file - and then every route 404s, which
+        # is a confusing way to find out.
+        preserveRequestMethod: true
+
+        # Optional allowlist. If set it must name EVERY header any limiter keys on;
+        # omitting one silently disables that limiter.
+        #
+        # authRequestHeaders:
+        #   - Content-Type
+        #   - X-Api-Key
+        #   - CF-Connecting-IP
+
+  routers:
+    # Attach narrowly: forwardBody buffers the whole request, so never apply it
+    # globally or to uploads.
+    tokens:
+      rule: "PathPrefix(`/v1/login`)"
+      entryPoints: ["web"]
+      middlewares: ["forwardlimit"]
+      service: app
+
+    # Same middleware, short-window limiter. Exists so the "block outlives the
+    # counting window" property can be observed in seconds.
+    quick:
+      rule: "PathPrefix(`/v1/quick`)"
+      entryPoints: ["web"]
+      middlewares: ["forwardlimit"]
+      service: app
+
+    # An unlimited route on the same backend, for comparison. Hammer this one and
+    # nothing is ever rejected.
+    open:
+      rule: "PathPrefix(`/open`)"
+      entryPoints: ["web"]
+      service: app
+
+  services:
+    app:
+      loadBalancer:
+        servers:
+          - url: "http://app:80"

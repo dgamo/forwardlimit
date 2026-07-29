@@ -1,0 +1,58 @@
+# The limiters for the Compose example.
+#
+# Thresholds are deliberately tiny so the behaviour is visible in four curl calls.
+# Nothing here is a sensible production value.
+
+limiters:
+  # Fixed window plus a hard block. Three requests per minute per email address,
+  # then blocked for two minutes - note the block outlives the counting window, so
+  # the fourth request stays rejected past the end of the minute.
+  - name: login
+    key:
+      body: email
+      normalise: lower
+      hash: true            # needs HASH_SECRET, which compose.yaml supplies
+    window: {limit: 3, window: 1m, block: 2m}
+    paths: ["/v1/login"]
+
+  # The same shape as `login`, but on a short window so the headline property is
+  # observable in seconds rather than a minute: exceed 2 in 5s and you stay blocked
+  # for 20s, which is *past the end of the counting window*. No proxy configuration
+  # can express that.
+  #
+  #   for i in 1 2 3; do curl -s -o /dev/null -w "%{http_code}\n" \
+  #     -XPOST localhost:8000/v1/quick -H 'Content-Type: application/json' \
+  #     -d '{"email":"user@example.com"}'; done      # 200 200 429
+  #   sleep 6 && ...                                  # still 429
+  - name: quick
+    key:
+      body: email
+      normalise: lower
+      hash: true
+    window: {limit: 2, window: 5s, block: 20s}
+    paths: ["/v1/quick"]
+
+  # Token bucket, for comparison. Generous enough not to interfere with the demo
+  # above, and it sends Retry-After where the abuse control deliberately does not.
+  #
+  # Try it with:
+  #   curl -i -XPOST localhost:8000/v1/login -H 'X-Api-Key: demo' \
+  #     -H 'Content-Type: application/json' -d '{"email":"other@example.com"}'
+  - name: tenant
+    key:
+      first:
+        - {header: [x-api-key]}
+        - {query: [api_key]}
+      hash: true
+    bucket: {rate: 5, burst: 10}
+    retryAfter: true
+
+  # In dry run: this one evaluates and reports but never rejects. Scrape the metrics
+  # from inside the network and look for
+  #   forwardlimit_decisions_total{limiter="ip",decision="would_block"}
+  - name: ip
+    key:
+      header: [CF-Connecting-IP, X-Forwarded-For]
+      normalise: ipsubnet/24
+    window: {limit: 20, window: 1m, block: 1m}
+    dryRun: true

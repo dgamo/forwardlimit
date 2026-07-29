@@ -1,0 +1,72 @@
+# goreleaser configuration.
+#
+# Check it without publishing:  goreleaser release --snapshot --clean
+version: 2
+
+project_name: forwardlimit
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: forwardlimit
+    main: ./cmd/forwardlimit
+    binary: forwardlimit
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      # Keep local paths out of the binary, so a released artefact is reproducible
+      # and says nothing about the machine that built it.
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - src: examples/config/*.yaml
+        dst: examples/config
+
+checksum:
+  name_template: checksums.txt
+
+# No docker section here on purpose. The image is built and pushed by the workflows,
+# from the same Dockerfile in both cases, so a release image and a `latest` image
+# cannot drift apart. goreleaser owns the binaries, archives, checksums and release
+# notes; the workflows own the registry.
+
+changelog:
+  # CHANGELOG.md is written by hand; this is only the commit list.
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  footer: |
+    ## Container image
+
+    ```
+    ghcr.io/dgamo/forwardlimit:{{ .Tag }}
+    ```
+
+    `latest` tracks the tip of main, not this release. Pin a version tag.
+
+    See [CHANGELOG.md](https://github.com/dgamo/forwardlimit/blob/main/CHANGELOG.md)
+    for what changed, and
+    [docs/deployment.md](https://github.com/dgamo/forwardlimit/blob/main/docs/deployment.md)
+    for how to run it.
