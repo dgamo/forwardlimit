@@ -50,6 +50,15 @@ http:
       middlewares: ["forwardlimit"]
       service: app
 
+    # Same middleware, method-scoped limiter. The router matches every method so
+    # that forwardlimit is the thing deciding which ones count - scoping the router
+    # instead would prove nothing about `methods`.
+    write:
+      rule: "PathPrefix(`/v1/write`)"
+      entryPoints: ["web"]
+      middlewares: ["forwardlimit"]
+      service: app
+
     # An unlimited route on the same backend, for comparison. Hammer this one and
     # nothing is ever rejected.
     open:

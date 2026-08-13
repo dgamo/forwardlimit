@@ -46,6 +46,13 @@ type Limiter struct {
 	// "/v1/loginfoo". A trailing slash is ignored, since writing one otherwise
 	// produces a limiter that never fires on the bare path.
 	Paths []string
+	// Methods restricts the limiter to these HTTP methods. Empty means every
+	// method. Matching is case-insensitive.
+	//
+	// ANDed with Paths, so a limiter narrowed by both applies only where the path
+	// matches and the method matches. Scoping to POST is what keeps a CORS
+	// preflight from spending the caller's budget.
+	Methods []string
 	// DryRun evaluates fully - the store is called, counters increment - but
 	// suppresses enforcement, so a request that would have been rejected is allowed.
 	// That fidelity is the point: the projection has to match what enforcement
@@ -62,8 +69,16 @@ type Limiter struct {
 // Active reports whether the limiter will be evaluated.
 func (l Limiter) Active() bool { return l.Rule.Valid() || l.Bucket.Valid() }
 
-// Applies reports whether the limiter is scoped to the given request path.
-func (l Limiter) Applies(path string) bool {
+// Applies reports whether the limiter is scoped to the given request.
+//
+// Path and method are ANDed: a limiter narrowed by both applies only where both
+// match. An unscoped limiter applies to everything.
+func (l Limiter) Applies(path, method string) bool {
+	return l.matchesPath(path) && l.matchesMethod(method)
+}
+
+// matchesPath reports whether the limiter is scoped to the given request path.
+func (l Limiter) matchesPath(path string) bool {
 	if len(l.Paths) == 0 {
 		return true
 	}
@@ -71,6 +86,23 @@ func (l Limiter) Applies(path string) bool {
 		p = strings.TrimSuffix(p, "/")
 		// "/" trimmed to "" means every path, which is what the operator asked for.
 		if p == "" || path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesMethod reports whether the limiter is scoped to the given request method.
+//
+// Folded rather than compared after uppercasing the configuration once: folding
+// both sides costs no allocation, and it closes an evasion path, since a limiter
+// written methods: [POST] must still catch a client that sends "post".
+func (l Limiter) matchesMethod(method string) bool {
+	if len(l.Methods) == 0 {
+		return true
+	}
+	for _, m := range l.Methods {
+		if strings.EqualFold(method, m) {
 			return true
 		}
 	}

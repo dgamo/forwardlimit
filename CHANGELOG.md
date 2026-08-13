@@ -8,6 +8,27 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Since the configuration file and the metric names are the interfaces users depend on,
 a breaking change to either is a major-version change.
 
+## [Unreleased]
+
+### Added
+
+- **`methods` on a limiter** — scope a limiter to specific HTTP methods, ANDed with
+  `paths`. Matching folds case on both sides, so `methods: ["POST"]` also catches a
+  client sending `post`; folding only the configuration would leave an evasion path.
+
+  The usual reason to set it is CORS: an unscoped limiter counts the browser's
+  `OPTIONS` preflight as well as the request itself, which silently halves the
+  effective limit.
+
+  Omitting the field means every method, so existing configurations are unaffected.
+
+### Changed
+
+- The README diagram now shows the allow and limit outcomes separately, and
+  distinguishes a route with the middleware attached from one without. The previous
+  version drew ForwardAuth and the upstream forward as though they were alternatives,
+  and labelled the forward with a `200` the application never receives.
+
 ## [0.1.0] - 2026-07-29
 
 First public release.

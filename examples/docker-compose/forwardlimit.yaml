@@ -32,6 +32,24 @@ limiters:
     window: {limit: 2, window: 5s, block: 20s}
     paths: ["/v1/quick"]
 
+  # Method scoping. Only POST counts here, so a browser's CORS preflight cannot
+  # spend the budget the POST needs:
+  #
+  #   for i in 1 2 3; do curl -s -o /dev/null -w "%{http_code}\n" \
+  #     -XOPTIONS localhost:8000/v1/write -H 'X-Client-Id: demo'; done   # 200 200 200
+  #   for i in 1 2 3; do curl -s -o /dev/null -w "%{http_code}\n" \
+  #     -XPOST localhost:8000/v1/write -H 'X-Client-Id: demo'; done      # 200 200 429
+  #
+  # Keyed on a header rather than a body field on purpose: a preflight carries no
+  # body, so a body key would skip this limiter for OPTIONS regardless of `methods`
+  # and would not demonstrate anything.
+  - name: write
+    key:
+      header: [X-Client-Id]   # a demo identifier, so not hashed
+    window: {limit: 2, window: 1m, block: 1m}
+    paths: ["/v1/write"]
+    methods: ["POST"]
+
   # Token bucket, for comparison. Generous enough not to interfere with the demo
   # above, and it sends Retry-After where the abuse control deliberately does not.
   #

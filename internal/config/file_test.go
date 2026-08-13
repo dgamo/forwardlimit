@@ -285,6 +285,27 @@ limiters:
     window: {limit: 5, window: 1m, block: 1m}
     response: {bodyFile: /nonexistent/response.json}
 `,
+		{"empty method", "must not be empty"}: `
+limiters:
+  - name: signup
+    key: {body: email}
+    window: {limit: 5, window: 1m, block: 1m}
+    methods: ["POST", ""]
+`,
+		{"malformed method", "not a valid HTTP method"}: `
+limiters:
+  - name: signup
+    key: {body: email}
+    window: {limit: 5, window: 1m, block: 1m}
+    methods: ["POST /x"]
+`,
+		{"duplicate method", "duplicate method"}: `
+limiters:
+  - name: signup
+    key: {body: email}
+    window: {limit: 5, window: 1m, block: 1m}
+    methods: ["POST", "post"]
+`,
 	}
 
 	for tc, body := range cases {

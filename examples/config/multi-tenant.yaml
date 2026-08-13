@@ -46,6 +46,10 @@ limiters:
       hash: true
     window: {limit: 15, window: 1h, block: 1h}
     paths: ["/v1/login"]
+    # Only the submission counts. Left unscoped, a browser's CORS preflight would
+    # spend an attempt before the real one arrived, halving the effective limit.
+    # Path and method are ANDed, so this is "POST to /v1/login".
+    methods: ["POST"]
     # Deliberately no retryAfter: telling an adversary exactly when to return states
     # the threshold precisely.
 

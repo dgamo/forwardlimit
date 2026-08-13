@@ -10,17 +10,31 @@ about each request on a protected route; it answers **200** (allow) or **429**
 [![Go Reference](https://pkg.go.dev/badge/github.com/dgamo/forwardlimit.svg)](https://pkg.go.dev/github.com/dgamo/forwardlimit)
 
 ```
-                      ┌─ ForwardAuth ─► forwardlimit ─► Redis
-                      │                     │
-client ──► Traefik ───┤        200 / 429 ◄──┘
-                      │
-                      └─ 200 ─────────────► your application
+route WITH forwardlimit attached
+
+                       ┌─────────────► Redis
+                       │
+ client ──► Traefik ──► forwardlimit
+               ▲             │
+               │   allow ────┴──── limit
+               │   (200)          (429)
+               │     │              │
+               │     ▼              ▼
+               │ your application  429 to client
+               │     │             (app never called)
+               └─────┴──────────────► client
+
+route WITHOUT it
+
+ client ──► Traefik ──────────────► your application ──► client
 ```
 
 - **Key on anything in the request** — a JSON body field (by dotted path), a
   header, a query parameter, or a combination of them.
 - **Two algorithms**: a fixed window with a punitive block, for abuse controls; a
   token bucket, for capacity protection.
+- **Scope by path and method** — `methods: ["POST"]` keeps a browser's CORS preflight
+  from spending the budget the real request needs.
 - **Distributed** — counting happens in Redis 5+ (or Valkey), single node or cluster,
   TLS optional, so limits are global rather than per-replica.
 - **Fails open** on every error path, and answers `200` while doing so, because

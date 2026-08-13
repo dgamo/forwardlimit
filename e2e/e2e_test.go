@@ -32,6 +32,7 @@ import (
 const (
 	loginPath = "/v1/login" // limiter "login": window 3 per 1m, block 2m
 	quickPath = "/v1/quick" // limiter "quick": window 2 per 5s, block 20s
+	writePath = "/v1/write" // limiter "write": window 2 per 1m, block 1m, methods [POST]
 	openPath  = "/open"     // no middleware attached
 )
 
@@ -88,6 +89,34 @@ func login(t *testing.T, email string) int {
 	t.Helper()
 	code, _, _ := post(t, loginPath, `{"email":"`+email+`"}`, nil)
 	return code
+}
+
+// uniqueClientID derives a header key nobody else will use, for the same reason
+// uniqueEmail does.
+func uniqueClientID(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf("%s-%d",
+		strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-")), time.Now().UnixNano())
+}
+
+// send issues a bodyless request with an arbitrary method and returns the status.
+func send(t *testing.T, method, path string, header http.Header) int {
+	t.Helper()
+
+	req, err := http.NewRequest(method, baseURL()+path, nil)
+	require.NoError(t, err)
+	for k, vs := range header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "is the stack up? see the package doc for the env vars")
+	defer func() { _ = resp.Body.Close() }()
+
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
 }
 
 // ---------- the documented contract ----------
@@ -197,6 +226,30 @@ func TestUnlimitedRouteIsNeverRejected(t *testing.T) {
 		_ = resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode, "request %d", i)
 	}
+}
+
+// A limiter scoped to POST must ignore every other method on the same route, and
+// the methods it ignores must not consume the allowance. That is the whole point:
+// a browser sends a CORS preflight before the request it actually cares about, and
+// counting the preflight would halve every limit for no reason.
+//
+// The router matches every method, so forwardlimit is what distinguishes them.
+func TestMethodScopedLimiterIgnoresOtherMethods(t *testing.T) {
+	h := http.Header{"X-Client-Id": []string{uniqueClientID(t)}}
+
+	// Well past the limit of 2, and none of it counts.
+	for i := 1; i <= 6; i++ {
+		require.Equal(t, http.StatusOK, send(t, http.MethodOptions, writePath, h),
+			"preflight %d must never be limited", i)
+		require.Equal(t, http.StatusOK, send(t, http.MethodGet, writePath, h),
+			"GET %d must never be limited", i)
+	}
+
+	// The allowance is untouched, so the limiter still fires on the method it covers.
+	require.Equal(t, http.StatusOK, send(t, http.MethodPost, writePath, h))
+	require.Equal(t, http.StatusOK, send(t, http.MethodPost, writePath, h))
+	require.Equal(t, http.StatusTooManyRequests, send(t, http.MethodPost, writePath, h),
+		"the 3rd POST exceeds limit: 2")
 }
 
 // A limiter whose key is absent does not apply, and the request is allowed. This

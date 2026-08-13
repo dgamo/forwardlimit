@@ -45,6 +45,9 @@ type LimiterSpec struct {
 	Bucket *BucketSpec `yaml:"bucket"`
 	// Paths restricts the limiter. Empty means every path.
 	Paths []string `yaml:"paths"`
+	// Methods restricts the limiter to these HTTP methods. Empty means every
+	// method. Matching is case-insensitive, and ANDed with Paths.
+	Methods []string `yaml:"methods"`
 	// DryRun evaluates and reports without rejecting.
 	DryRun bool `yaml:"dryRun"`
 	// RetryAfter adds a Retry-After header. For a cooperating caller, not for an
@@ -117,6 +120,13 @@ func (k KeySpec) sources() []string {
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
+// methodRe is the RFC 9110 token production, which is what an HTTP method is.
+//
+// Deliberately wider than the familiar verbs: an extension method such as
+// PROPFIND or MKCALENDAR is legitimate, and rejecting one as a typo would be
+// worse than accepting a method that never arrives.
+var methodRe = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")
+
 // Validate checks the whole file, collecting every problem rather than stopping
 // at the first. A configuration error should be fixed in one pass, not
 // discovered one restart at a time.
@@ -181,8 +191,37 @@ func validateLimiter(i int, l LimiterSpec, seen map[string]bool, fail func(strin
 		validateKey(where+".key", *l.Key, fail)
 	}
 
+	validateMethods(where, l.Methods, fail)
+
 	if l.Response != nil {
 		validateResponse(where+".response", l.Response, fail)
+	}
+}
+
+// validateMethods checks the method filter. An empty list is valid and means
+// every method, mirroring paths.
+func validateMethods(where string, methods []string, fail func(string, ...any)) {
+	seen := make(map[string]bool, len(methods))
+	for i, m := range methods {
+		at := fmt.Sprintf("%s.methods[%d]", where, i)
+
+		if m == "" {
+			fail("%s: must not be empty", at)
+			continue
+		}
+		if !methodRe.MatchString(m) {
+			fail("%s: %q is not a valid HTTP method", at, m)
+			continue
+		}
+
+		// Matching is case-insensitive, so GET and get are one filter written
+		// twice - a mistake worth reporting rather than silently collapsing.
+		up := strings.ToUpper(m)
+		if seen[up] {
+			fail("%s: duplicate method %q", at, m)
+			continue
+		}
+		seen[up] = true
 	}
 }
 

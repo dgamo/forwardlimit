@@ -66,6 +66,7 @@ limiters:
     key: {body: email, normalise: lower, hash: true}
     window: {limit: 15, window: 1h, block: 2h}
     paths: ["/v1/signup"]
+    methods: ["POST", "GET"]
     dryRun: true
 `, testSecret)
 
@@ -79,12 +80,15 @@ limiters:
 	require.Equal(t, int64(400), tenant.Bucket.Burst)
 	require.True(t, tenant.AdviseRetryAfter)
 	require.Zero(t, tenant.Rule.Limit, "a bucket limiter must leave the window rule unset")
+	require.Empty(t, tenant.Methods,
+		"an omitted methods list must stay empty, which means every method")
 
 	signup := b.Limiters[1]
 	require.Equal(t, int64(15), signup.Rule.Limit)
 	require.Equal(t, time.Hour, signup.Rule.Window)
 	require.Equal(t, 2*time.Hour, signup.Rule.Block)
 	require.Equal(t, []string{"/v1/signup"}, signup.Paths)
+	require.Equal(t, []string{"POST", "GET"}, signup.Methods)
 	require.True(t, signup.DryRun)
 	require.False(t, signup.AdviseRetryAfter)
 	require.Zero(t, signup.Bucket.Rate, "a window limiter must leave the bucket unset")

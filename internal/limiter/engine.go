@@ -40,7 +40,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *Request) Decision {
 	var d Decision
 
 	for _, l := range e.limiters {
-		if !l.Applies(req.Path) || !l.Active() {
+		if !l.Applies(req.Path, req.Method) || !l.Active() {
 			continue
 		}
 

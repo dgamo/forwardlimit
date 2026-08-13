@@ -35,6 +35,10 @@ func req(path string) *limiter.Request {
 	return &limiter.Request{Method: http.MethodPost, Path: path, Header: http.Header{}}
 }
 
+func reqMethod(method, path string) *limiter.Request {
+	return &limiter.Request{Method: method, Path: path, Header: http.Header{}}
+}
+
 func TestEvaluateWithNoLimitersAllows(t *testing.T) {
 	t.Parallel()
 	e := limiter.NewEngine(storetest.New(), discardLogger())
@@ -80,16 +84,44 @@ func TestPathScopingSkipsLimiterAndStore(t *testing.T) {
 	require.Zero(t, fake.CallCount(), "an out-of-scope limiter must not touch the store")
 }
 
+// A method miss must behave exactly like a path miss: no store call, no counter
+// increment, nothing recorded. This is the property that stops CORS preflights
+// consuming a budget meant for real requests.
+func TestMethodScopingSkipsLimiterAndStore(t *testing.T) {
+	t.Parallel()
+	fake := storetest.New()
+	e := limiter.NewEngine(fake, discardLogger(), limiter.Limiter{
+		Name:    "login",
+		Rule:    validRule(1),
+		Keyer:   constKeyer("bucket"),
+		Paths:   []string{"/v1/login"},
+		Methods: []string{http.MethodPost},
+	})
+
+	// Same path, wrong method - a preflight for the very request being limited.
+	d := e.Evaluate(context.Background(), reqMethod(http.MethodOptions, "/v1/login"))
+	require.False(t, d.Blocked)
+	require.Empty(t, d.Evaluations)
+	require.Zero(t, fake.CallCount(), "a method-scoped limiter must not touch the store")
+
+	// The limiter is still live for the method it does cover, and the preflights
+	// above have not eaten into its allowance.
+	d = e.Evaluate(context.Background(), reqMethod(http.MethodPost, "/v1/login"))
+	require.False(t, d.Blocked, "the first in-scope request is within a limit of 1")
+	d = e.Evaluate(context.Background(), reqMethod(http.MethodPost, "/v1/login"))
+	require.True(t, d.Blocked, "the second exceeds it")
+}
+
 func TestPathScopingMatchesExactAndSubPaths(t *testing.T) {
 	t.Parallel()
 	l := limiter.Limiter{Paths: []string{"/v1/login"}}
 
-	require.True(t, l.Applies("/v1/login"))
-	require.True(t, l.Applies("/v1/login/extra"))
-	require.False(t, l.Applies("/v1/loginfoo"), "prefix match must respect the path separator")
-	require.False(t, l.Applies("/v1"))
+	require.True(t, l.Applies("/v1/login", "POST"))
+	require.True(t, l.Applies("/v1/login/extra", "POST"))
+	require.False(t, l.Applies("/v1/loginfoo", "POST"), "prefix match must respect the path separator")
+	require.False(t, l.Applies("/v1", "POST"))
 
-	require.True(t, limiter.Limiter{}.Applies("/anything"), "no paths means all paths")
+	require.True(t, limiter.Limiter{}.Applies("/anything", "POST"), "no paths means all paths")
 }
 
 // A trailing slash in configuration must not quietly produce a limiter that never
@@ -98,13 +130,54 @@ func TestPathScopingIgnoresATrailingSlash(t *testing.T) {
 	t.Parallel()
 	l := limiter.Limiter{Paths: []string{"/v1/login/"}}
 
-	require.True(t, l.Applies("/v1/login"), "the bare path must still match")
-	require.True(t, l.Applies("/v1/login/"))
-	require.True(t, l.Applies("/v1/login/extra"))
-	require.False(t, l.Applies("/v1/loginfoo"))
+	require.True(t, l.Applies("/v1/login", "POST"), "the bare path must still match")
+	require.True(t, l.Applies("/v1/login/", "POST"))
+	require.True(t, l.Applies("/v1/login/extra", "POST"))
+	require.False(t, l.Applies("/v1/loginfoo", "POST"))
 
 	// And "/" means every path, rather than trimming to something that matches none.
-	require.True(t, limiter.Limiter{Paths: []string{"/"}}.Applies("/anything"))
+	require.True(t, limiter.Limiter{Paths: []string{"/"}}.Applies("/anything", "POST"))
+}
+
+func TestMethodScoping(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, limiter.Limiter{}.Applies("/x", "OPTIONS"),
+		"no methods means every method")
+
+	l := limiter.Limiter{Methods: []string{"POST"}}
+	require.True(t, l.Applies("/x", "POST"))
+	require.False(t, l.Applies("/x", "GET"))
+	require.False(t, l.Applies("/x", "OPTIONS"),
+		"a CORS preflight must not spend the caller's budget")
+
+	multi := limiter.Limiter{Methods: []string{"POST", "GET"}}
+	require.True(t, multi.Applies("/x", "POST"))
+	require.True(t, multi.Applies("/x", "GET"))
+	require.False(t, multi.Applies("/x", "DELETE"))
+}
+
+// Matching folds case on both sides. Uppercasing only the configuration would let
+// a client send "post" to slip past a limiter written methods: [POST].
+func TestMethodScopingIsCaseInsensitiveBothWays(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, limiter.Limiter{Methods: []string{"POST"}}.Applies("/x", "post"),
+		"a lowercase request method must not evade an uppercase filter")
+	require.True(t, limiter.Limiter{Methods: []string{"post"}}.Applies("/x", "POST"),
+		"a lowercase filter must still match the usual uppercase method")
+	require.True(t, limiter.Limiter{Methods: []string{"PoSt"}}.Applies("/x", "pOsT"))
+}
+
+// Path and method are ANDed, not ORed: matching one is not enough.
+func TestPathAndMethodAreAnded(t *testing.T) {
+	t.Parallel()
+	l := limiter.Limiter{Paths: []string{"/v1/login"}, Methods: []string{"POST"}}
+
+	require.True(t, l.Applies("/v1/login", "POST"))
+	require.False(t, l.Applies("/v1/login", "GET"), "path matches but method does not")
+	require.False(t, l.Applies("/v1/other", "POST"), "method matches but path does not")
+	require.False(t, l.Applies("/v1/other", "GET"))
 }
 
 func TestKeyerNotApplicableSkipsLimiter(t *testing.T) {

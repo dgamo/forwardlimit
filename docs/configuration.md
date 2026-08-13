@@ -64,6 +64,7 @@ limiters:
 | `window` | one of | Fixed window with a hard block. Mutually exclusive with `bucket`. |
 | `bucket` | one of | Token bucket. Mutually exclusive with `window`. |
 | `paths` | no | Path prefixes this limiter applies to. Empty means every path. |
+| `methods` | no | HTTP methods this limiter applies to. Empty means every method. See [`methods`](#methods--scoping-to-http-methods). |
 | `dryRun` | no | Evaluate and report without rejecting. Default `false`. |
 | `retryAfter` | no | Send `Retry-After` when this limiter rejects. Default `false`. |
 | `response` | no | Override the response for this limiter only. |
@@ -125,6 +126,37 @@ jitter without allowing a sustained doubling.
 
 The bounds on both algorithms exist to catch a mistyped extra digit, not to express
 policy. The edges themselves are usable.
+
+### `methods` — scoping to HTTP methods
+
+```yaml
+paths: ["/v1/login"]
+methods: ["POST"]
+```
+
+Empty means every method, so omitting the field leaves behaviour unchanged.
+
+`paths` and `methods` are **ANDed**: the example above is "POST to `/v1/login`", not
+"POST anywhere, or anything to `/v1/login`". A limiter the method does not match is
+skipped exactly as a path miss is skipped — no store call, no counter increment, and
+no effect on any other limiter.
+
+Matching is case-insensitive, on both sides. `methods: ["post"]` and
+`methods: ["POST"]` are the same filter, and either catches a client that sends
+`post`. That is deliberate rather than lenient: folding only the configuration would
+let a lowercase method slip past the limiter entirely.
+
+**The usual reason to set this is CORS.** A browser sends `OPTIONS` before the
+request it actually cares about, and an unscoped limiter counts both — so a limit of
+`10` becomes an effective `5`, and the preflight can exhaust the allowance before the
+real request is ever made. Where preflights are a third of the traffic on an endpoint,
+`methods: ["POST"]` is the difference between a limit that means what it says and one
+that has to be inflated to compensate.
+
+Any [RFC 9110 token](https://www.rfc-editor.org/rfc/rfc9110#name-methods) is accepted,
+not just the familiar verbs, so an extension method such as `PROPFIND` is valid.
+Duplicates within one limiter are rejected, since after case folding they are the same
+filter written twice.
 
 ## Key specification
 
