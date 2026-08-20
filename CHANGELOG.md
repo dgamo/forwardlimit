@@ -10,8 +10,33 @@ a breaking change to either is a major-version change.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`paths` now matches exactly.** Previously a path was exact-or-prefix, so
+  `paths: ["/v1/orders"]` silently also covered `/v1/orders/123` and everything
+  else beneath it. Opt into a subtree with a trailing `/*`:
+
+  ```yaml
+  paths: ["/v1/orders"]      # /v1/orders and nothing else
+  paths: ["/v1/orders/*"]    # /v1/orders AND everything under it
+  ```
+
+  **Migration:** any path relying on the old behaviour becomes `X` -> `X/*`. A path
+  naming a single endpoint needs no change. Note `paths: ["/"]` previously meant
+  every path and now means the root only; write `["/*"]` for the old meaning.
+
+  The old default failed silently, and in the direction that hurts: a limiter scoped
+  to one endpoint counted its children too, and no metric distinguished the two, so
+  it merely appeared to see more traffic than the endpoint it named. Where a subtree
+  is busier than its root — common for callback and sub-resource routes — a threshold
+  tuned against that reading can be off by an order of magnitude.
+
 ### Added
 
+- **`paths` validation.** Paths were previously unchecked. A path must now be
+  absolute, and a `*` is accepted only as a trailing `/*` — `"/v1/*/signup"` and
+  `"/v1/sign*"` are refused at startup instead of being compared literally and
+  matching nothing.
 - **`methods` on a limiter** — scope a limiter to specific HTTP methods, ANDed with
   `paths`. Matching folds case on both sides, so `methods: ["POST"]` also catches a
   client sending `post`; folding only the configuration would leave an evasion path.

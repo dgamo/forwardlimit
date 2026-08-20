@@ -285,6 +285,27 @@ limiters:
     window: {limit: 5, window: 1m, block: 1m}
     response: {bodyFile: /nonexistent/response.json}
 `,
+		{"path not absolute", "must start with /"}: `
+limiters:
+  - name: signup
+    key: {body: email}
+    window: {limit: 5, window: 1m, block: 1m}
+    paths: ["v1/signup"]
+`,
+		{"glob in the middle of a path", "only valid as a trailing"}: `
+limiters:
+  - name: signup
+    key: {body: email}
+    window: {limit: 5, window: 1m, block: 1m}
+    paths: ["/v1/*/signup"]
+`,
+		{"partial-segment glob", "only valid as a trailing"}: `
+limiters:
+  - name: signup
+    key: {body: email}
+    window: {limit: 5, window: 1m, block: 1m}
+    paths: ["/v1/sign*"]
+`,
 		{"empty method", "must not be empty"}: `
 limiters:
   - name: signup
