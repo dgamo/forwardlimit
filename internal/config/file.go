@@ -43,7 +43,8 @@ type LimiterSpec struct {
 	Key    *KeySpec    `yaml:"key"`
 	Window *WindowSpec `yaml:"window"`
 	Bucket *BucketSpec `yaml:"bucket"`
-	// Paths restricts the limiter. Empty means every path.
+	// Paths restricts the limiter. Empty means every path. Matching is exact;
+	// a trailing "/*" opts into the subtree.
 	Paths []string `yaml:"paths"`
 	// Methods restricts the limiter to these HTTP methods. Empty means every
 	// method. Matching is case-insensitive, and ANDed with Paths.
@@ -191,10 +192,34 @@ func validateLimiter(i int, l LimiterSpec, seen map[string]bool, fail func(strin
 		validateKey(where+".key", *l.Key, fail)
 	}
 
+	validatePaths(where, l.Paths, fail)
 	validateMethods(where, l.Methods, fail)
 
 	if l.Response != nil {
 		validateResponse(where+".response", l.Response, fail)
+	}
+}
+
+// validatePaths checks the path filter. An empty list is valid and means every
+// path.
+//
+// A "*" is only meaningful as a trailing "/*". Anywhere else it is almost certainly
+// someone expecting glob matching, and since paths are compared literally such a
+// pattern would match nothing at all - a limiter that silently never fires. Better
+// to refuse to start.
+func validatePaths(where string, paths []string, fail func(string, ...any)) {
+	for i, p := range paths {
+		at := fmt.Sprintf("%s.paths[%d]", where, i)
+
+		switch {
+		case p == "":
+			fail("%s: must not be empty", at)
+		case !strings.HasPrefix(p, "/"):
+			fail("%s: %q must start with /", at, p)
+		case strings.Contains(strings.TrimSuffix(p, "/*"), "*"):
+			fail("%s: %q - * is only valid as a trailing /*, which matches the path "+
+				"and everything under it; paths are otherwise compared exactly", at, p)
+		}
 	}
 }
 

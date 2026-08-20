@@ -112,31 +112,61 @@ func TestMethodScopingSkipsLimiterAndStore(t *testing.T) {
 	require.True(t, d.Blocked, "the second exceeds it")
 }
 
-func TestPathScopingMatchesExactAndSubPaths(t *testing.T) {
+// Paths are EXACT unless they opt into a subtree. Sub-paths not matching is the
+// whole point: a limiter for one endpoint must not silently count its children,
+// which would inflate every projection it feeds.
+func TestPathScopingIsExactByDefault(t *testing.T) {
 	t.Parallel()
-	l := limiter.Limiter{Paths: []string{"/v1/login"}}
+	l := limiter.Limiter{Paths: []string{"/v1/orders"}}
 
-	require.True(t, l.Applies("/v1/login", "POST"))
-	require.True(t, l.Applies("/v1/login/extra", "POST"))
-	require.False(t, l.Applies("/v1/loginfoo", "POST"), "prefix match must respect the path separator")
+	require.True(t, l.Applies("/v1/orders", "POST"))
+	require.False(t, l.Applies("/v1/orders/123", "POST"),
+		"an exact path must not cover its children")
+	require.False(t, l.Applies("/v1/orders/123/cancel", "POST"))
+	require.False(t, l.Applies("/v1/ordersfoo", "POST"))
 	require.False(t, l.Applies("/v1", "POST"))
 
 	require.True(t, limiter.Limiter{}.Applies("/anything", "POST"), "no paths means all paths")
 }
 
-// A trailing slash in configuration must not quietly produce a limiter that never
-// fires on the bare path - a silent loss of protection.
+// A trailing "/*" opts into the subtree: the base path itself plus everything under
+// it, still respecting the separator.
+func TestPathScopingSubtreeWildcard(t *testing.T) {
+	t.Parallel()
+	l := limiter.Limiter{Paths: []string{"/v1/orders/*"}}
+
+	require.True(t, l.Applies("/v1/orders", "POST"), "the base path is included")
+	require.True(t, l.Applies("/v1/orders/123", "POST"))
+	require.True(t, l.Applies("/v1/orders/123/cancel", "POST"))
+	require.False(t, l.Applies("/v1/ordersfoo", "POST"),
+		"a subtree match must respect the path separator")
+	require.False(t, l.Applies("/v1", "POST"))
+
+	// "/*" on its own is every path, which is how an operator writes "everything".
+	require.True(t, limiter.Limiter{Paths: []string{"/*"}}.Applies("/anything", "POST"))
+
+	// Exact and subtree entries mix in one list.
+	mixed := limiter.Limiter{Paths: []string{"/v1/orders", "/v1/reports/*"}}
+	require.True(t, mixed.Applies("/v1/orders", "POST"))
+	require.False(t, mixed.Applies("/v1/orders/123", "POST"))
+	require.True(t, mixed.Applies("/v1/reports/daily", "POST"))
+}
+
+// A trailing slash must not quietly produce a limiter that never fires.
 func TestPathScopingIgnoresATrailingSlash(t *testing.T) {
 	t.Parallel()
 	l := limiter.Limiter{Paths: []string{"/v1/login/"}}
 
 	require.True(t, l.Applies("/v1/login", "POST"), "the bare path must still match")
 	require.True(t, l.Applies("/v1/login/", "POST"))
-	require.True(t, l.Applies("/v1/login/extra", "POST"))
-	require.False(t, l.Applies("/v1/loginfoo", "POST"))
+	require.False(t, l.Applies("/v1/login/extra", "POST"),
+		"a trailing slash is not a subtree wildcard")
 
-	// And "/" means every path, rather than trimming to something that matches none.
-	require.True(t, limiter.Limiter{Paths: []string{"/"}}.Applies("/anything", "POST"))
+	// The root is exact, and must not be trimmed to "" - a pattern matching nothing.
+	root := limiter.Limiter{Paths: []string{"/"}}
+	require.True(t, root.Applies("/", "POST"))
+	require.False(t, root.Applies("/anything", "POST"),
+		`"/" is the root path; use "/*" for every path`)
 }
 
 func TestMethodScoping(t *testing.T) {

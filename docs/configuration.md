@@ -63,7 +63,7 @@ limiters:
 | `key` | yes | How to derive the bucket. See [Key specification](#key-specification). |
 | `window` | one of | Fixed window with a hard block. Mutually exclusive with `bucket`. |
 | `bucket` | one of | Token bucket. Mutually exclusive with `window`. |
-| `paths` | no | Path prefixes this limiter applies to. Empty means every path. |
+| `paths` | no | Paths this limiter applies to, matched **exactly**. Empty means every path. A trailing `/*` opts into the subtree. See [`paths`](#paths--scoping-to-endpoints). |
 | `methods` | no | HTTP methods this limiter applies to. Empty means every method. See [`methods`](#methods--scoping-to-http-methods). |
 | `dryRun` | no | Evaluate and report without rejecting. Default `false`. |
 | `retryAfter` | no | Send `Retry-After` when this limiter rejects. Default `false`. |
@@ -126,6 +126,39 @@ jitter without allowing a sustained doubling.
 
 The bounds on both algorithms exist to catch a mistyped extra digit, not to express
 policy. The edges themselves are usable.
+
+### `paths` — scoping to endpoints
+
+```yaml
+paths: ["/v1/orders"]            # /v1/orders and nothing else
+paths: ["/v1/orders/*"]          # /v1/orders AND everything under it
+```
+
+Empty means every path.
+
+**Matching is exact.** `/v1/orders` does not cover `/v1/orders/123`, and a
+trailing slash is ignored, so `/v1/orders/` is the same path. To take in a whole
+subtree, opt in with a trailing `/*`: `/v1/orders/*` matches `/v1/orders` and
+everything below it, still on the separator, so it excludes `/v1/ordersfoo`. `/*`
+alone is every path. `/` is the root path only.
+
+Exact is the default because a prefix default fails quietly, and in the direction that
+hurts. A limiter written for one endpoint would also count everything beneath it —
+`/v1/orders/{id}`, `/v1/orders/{id}/cancel`, a webhook callback nested under the same
+prefix — and no metric would distinguish the two. The limiter would simply appear to
+see more traffic than the endpoint it names, and any threshold tuned against that
+reading would be wrong. Where a subtree is busier than its root, which is common for
+callback and sub-resource routes, the discrepancy can be an order of magnitude.
+
+A `*` anywhere other than a trailing `/*` is rejected at startup rather than treated
+literally, since a pattern like `/v1/*/signup` would otherwise match nothing and the
+limiter would never fire:
+
+```
+paths: ["/v1/*/signup"]   -> error
+paths: ["/v1/sign*"]      -> error
+paths: ["v1/signup"]      -> error   (must start with /)
+```
 
 ### `methods` — scoping to HTTP methods
 

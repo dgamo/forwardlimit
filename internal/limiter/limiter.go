@@ -41,10 +41,12 @@ type Limiter struct {
 	Rule   store.Rule
 	Bucket store.Bucket
 	Keyer  Keyer
-	// Paths restricts the limiter. Empty means all paths. Matching is exact or
-	// prefix-with-separator, so "/v1/login" matches "/v1/login/x" but not
-	// "/v1/loginfoo". A trailing slash is ignored, since writing one otherwise
-	// produces a limiter that never fires on the bare path.
+	// Paths restricts the limiter. Empty means all paths.
+	//
+	// Matching is EXACT: "/v1/orders" does not cover "/v1/orders/123". A
+	// trailing "/*" opts into the subtree instead, so "/v1/orders/*" matches
+	// "/v1/orders" and everything below it but not "/v1/ordersfoo". A trailing
+	// slash is ignored.
 	Paths []string
 	// Methods restricts the limiter to these HTTP methods. Empty means every
 	// method. Matching is case-insensitive.
@@ -78,18 +80,39 @@ func (l Limiter) Applies(path, method string) bool {
 }
 
 // matchesPath reports whether the limiter is scoped to the given request path.
+//
+// Exact by default, with a trailing "/*" opting into the subtree. That way round
+// because the other one fails silently: a limiter written for a single endpoint
+// would quietly count everything beneath it, and the dry-run projection it feeds
+// would read high with nothing to say why.
 func (l Limiter) matchesPath(path string) bool {
 	if len(l.Paths) == 0 {
 		return true
 	}
+	path = normalisePath(path)
 	for _, p := range l.Paths {
-		p = strings.TrimSuffix(p, "/")
-		// "/" trimmed to "" means every path, which is what the operator asked for.
-		if p == "" || path == p || strings.HasPrefix(path, p+"/") {
+		if base, subtree := strings.CutSuffix(p, "/*"); subtree {
+			// "/*" alone is every path. Otherwise the base itself or anything under
+			// it, matching on the separator so "/v1/x/*" excludes "/v1/xy".
+			if base == "" || path == base || strings.HasPrefix(path, base+"/") {
+				return true
+			}
+			continue
+		}
+		if path == normalisePath(p) {
 			return true
 		}
 	}
 	return false
+}
+
+// normalisePath drops a trailing slash so "/v1/x/" and "/v1/x" are one path. The
+// root is left alone: trimming "/" to "" would yield a pattern matching nothing.
+func normalisePath(p string) string {
+	if len(p) > 1 {
+		return strings.TrimSuffix(p, "/")
+	}
+	return p
 }
 
 // matchesMethod reports whether the limiter is scoped to the given request method.
