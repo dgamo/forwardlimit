@@ -27,6 +27,8 @@ limiters:
       first:
         - {header: [x-api-key, authorization]}
         - {query: [api_key, token]}
+      # On a `first`, hash applies to whichever source won - so the credential is
+      # hashed wherever it arrived from, without repeating this on each branch.
       hash: true
     bucket: {rate: 200, burst: 400}
     # A cooperating caller should be told to back off, or it will retry immediately

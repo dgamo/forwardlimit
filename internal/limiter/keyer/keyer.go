@@ -196,6 +196,11 @@ func (q QueryParam) Key(r *limiter.Request) (string, bool) {
 // several routes, with a defined precedence.
 type First struct {
 	Parts []limiter.Keyer
+	// Normalise and Hasher apply to whichever part won, so a normaliser or a hash
+	// declared on the composed node covers every source under it rather than
+	// having to be repeated on each.
+	Normalise Normaliser
+	Hasher    Hasher
 }
 
 var _ limiter.Keyer = First{}
@@ -203,9 +208,19 @@ var _ limiter.Keyer = First{}
 // Key implements limiter.Keyer.
 func (f First) Key(r *limiter.Request) (string, bool) {
 	for _, p := range f.Parts {
-		if v, ok := p.Key(r); ok {
-			return v, true
+		v, ok := p.Key(r)
+		if !ok {
+			continue
 		}
+		if f.Normalise != nil {
+			v = f.Normalise(v)
+		}
+		// Normalising to nothing means this source yielded no usable value, so try
+		// the next one rather than giving up on the limiter.
+		if v == "" {
+			continue
+		}
+		return hasher(f.Hasher).Hash(v)
 	}
 	return "", false
 }
@@ -219,6 +234,10 @@ type Composite struct {
 	Parts []limiter.Keyer
 	// Sep separates the parts. Defaults to ":".
 	Sep string
+	// Normalise and Hasher apply to the joined value. A normaliser that only makes
+	// sense per part - digits, ipsubnet - belongs on the part instead.
+	Normalise Normaliser
+	Hasher    Hasher
 }
 
 var _ limiter.Keyer = Composite{}
@@ -241,7 +260,14 @@ func (c Composite) Key(r *limiter.Request) (string, bool) {
 		}
 		parts = append(parts, v)
 	}
-	return strings.Join(parts, sep), true
+	joined := strings.Join(parts, sep)
+	if c.Normalise != nil {
+		joined = c.Normalise(joined)
+	}
+	if joined == "" {
+		return "", false
+	}
+	return hasher(c.Hasher).Hash(joined)
 }
 
 func hasher(h Hasher) Hasher {
