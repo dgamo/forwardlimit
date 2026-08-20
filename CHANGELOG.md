@@ -10,6 +10,29 @@ a breaking change to either is a major-version change.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`hash` and `normalise` were silently ignored on a `first` or `composite` key
+  node.** `keyer.First` and `keyer.Composite` carried neither, so the value fell
+  through unchanged and the *raw* value became the storage key.
+
+  For `hash: true` this means a credential written to be hashed was instead stored
+  verbatim in Redis, and reached the logs on any store error. For
+  `normalise: ipsubnet/24` it means the full address was kept rather than the
+  network prefix, so rotating within a network defeated the limiter — the one thing
+  that normaliser exists to prevent.
+
+  Both now apply at the composed node: on a `first` to whichever source won, on a
+  `composite` to the joined value. Declaring them on a child still works as before.
+
+  This affected the `tenant` limiter in `examples/config/multi-tenant.yaml`, so
+  anyone following that example was storing raw API keys.
+
+  **Migration:** buckets for an affected limiter change value, so its counters and
+  blocks are orphaned and age out by TTL. Expect one window of under-counting after
+  the upgrade. Any raw credential already written to Redis stays there until its key
+  expires — flush it if that matters, and note it may also sit in retained logs.
+
 ### Changed — BREAKING
 
 - **`paths` now matches exactly.** Previously a path was exact-or-prefix, so

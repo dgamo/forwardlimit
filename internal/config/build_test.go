@@ -134,6 +134,58 @@ func TestBuiltKeyers(t *testing.T) {
 			ok:   false,
 		},
 		{
+			// REGRESSION: hash on a composed node used to be dropped entirely, so the
+			// bucket was the raw credential. keyer.First had no Hasher, the child fell
+			// through to Plain{}, and the secret became the storage key and reached the
+			// logs. This case fails loudly if that returns.
+			name: "first: hashes at the composed node",
+			spec: `key:
+      first:
+        - {header: [x-secret]}
+        - {query: [token]}
+      hash: true`,
+			req:  req("/", http.Header{"X-Secret": {"raw-credential"}}, "", ""),
+			want: hashed("raw-credential"),
+			ok:   true,
+		},
+		{
+			// REGRESSION: normalise on a composed node was dropped too, so an ipsubnet
+			// written to coarsen an address silently kept the full value - defeating
+			// the only reason to write it, and storing the exact address.
+			name: "first: normalises at the composed node",
+			spec: `key:
+      first:
+        - {header: [cf-connecting-ip]}
+        - {header: [x-forwarded-for]}
+      normalise: ipsubnet/24`,
+			req:  req("/", http.Header{"Cf-Connecting-Ip": {"203.0.113.77"}}, "", ""),
+			want: "203.0.113.0/24",
+			ok:   true,
+		},
+		{
+			name: "composite: hashes the joined value",
+			spec: `key:
+      separator: "|"
+      composite:
+        - {header: [x-api-key]}
+        - {header: [x-tenant]}
+      hash: true`,
+			req:  req("/", http.Header{"X-Api-Key": {"k1"}, "X-Tenant": {"t1"}}, "", ""),
+			want: hashed("k1|t1"),
+			ok:   true,
+		},
+		{
+			name: "composite: normalises the joined value",
+			spec: `key:
+      composite:
+        - {header: [x-a]}
+        - {header: [x-b]}
+      normalise: lower`,
+			req:  req("/", http.Header{"X-A": {"AA"}, "X-B": {"BB"}}, "", ""),
+			want: "aa:bb",
+			ok:   true,
+		},
+		{
 			name: "header, first non-empty wins",
 			spec: `key: {header: [x-absent, x-api-key]}`,
 			req:  req("/", http.Header{"X-Api-Key": {"abc"}}, "", ""),

@@ -256,8 +256,8 @@ warning:
 limiter "login" needs hashing but HASH_SECRET is empty: it is disabled and will not limit anything
 ```
 
-Hashing is checked recursively: `hash: true` on any node inside a `composite`
-disables the whole limiter when no secret is configured.
+Hashing is checked recursively: `hash: true` on any node inside a `first` or
+`composite` disables the whole limiter when no secret is configured.
 
 Changing `HASH_SECRET` changes every bucket, so all counters effectively reset.
 Rotate it deliberately, not casually.
@@ -287,7 +287,15 @@ key:
     - {header: [CF-Connecting-IP], normalise: ipsubnet/24}
 ```
 
-`hash` applies per node, so one part can be hashed and another left readable.
+`hash` and `normalise` apply per node, so one part can be hashed and another left
+readable. Declared on the composed node itself they cover the whole thing: on a
+`first` they apply to whichever source won, and on a `composite` to the joined
+value. So the `first` example above hashes the credential wherever it came from,
+without repeating `hash: true` on each branch.
+
+Because a `composite` normaliser sees the joined string, one that only makes sense
+for a single value — `digits`, `ipsubnet` — belongs on the part rather than the
+parent.
 
 `first` and `composite` nest, so an arbitrary tree is expressible. A `composite`
 with a single child is rejected: it is the same as using that child directly.

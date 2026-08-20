@@ -182,14 +182,15 @@ func buildKeyer(spec KeySpec, hasher keyer.HMAC) (limiter.Keyer, bool, error) {
 		if err != nil {
 			return nil, false, err
 		}
-		return keyer.First{Parts: parts}, needsHash || spec.Hash, nil
+		return keyer.First{Parts: parts, Normalise: n, Hasher: h}, needsHash || spec.Hash, nil
 
 	case len(spec.Composite) > 0:
 		parts, needsHash, err := buildChildren(spec.Composite, hasher)
 		if err != nil {
 			return nil, false, err
 		}
-		return keyer.Composite{Parts: parts, Sep: spec.Separator}, needsHash || spec.Hash, nil
+		return keyer.Composite{Parts: parts, Sep: spec.Separator, Normalise: n, Hasher: h},
+			needsHash || spec.Hash, nil
 	}
 
 	// Unreachable via LoadFile, which validates first.
