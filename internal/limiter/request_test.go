@@ -147,3 +147,28 @@ func TestRequestHeaderValue(t *testing.T) {
 		})
 	}
 }
+
+// url.Values is a plain map, so its Get is case-sensitive. A caller varying the
+// case of a parameter name would otherwise yield no key, and a limiter with no
+// key is skipped rather than enforced — the same evasion class as the
+// case-sensitive path matching fixed alongside this.
+func TestRequestQueryValueIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{
+		"access_token=abc",
+		"ACCESS_TOKEN=abc",
+		"Access_Token=abc",
+		"foo=1&AcCeSs_ToKeN=abc",
+	} {
+		r := &limiter.Request{RawQuery: raw, Header: http.Header{}}
+		got, ok := r.QueryValue("access_token")
+		require.True(t, ok, "query %q must yield a key", raw)
+		require.Equal(t, "abc", got)
+	}
+
+	// An absent parameter still yields nothing.
+	r := &limiter.Request{RawQuery: "other=1", Header: http.Header{}}
+	_, ok := r.QueryValue("access_token")
+	require.False(t, ok)
+}

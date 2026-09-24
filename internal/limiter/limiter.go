@@ -46,7 +46,7 @@ type Limiter struct {
 	// Matching is EXACT: "/v1/orders" does not cover "/v1/orders/123". A
 	// trailing "/*" opts into the subtree instead, so "/v1/orders/*" matches
 	// "/v1/orders" and everything below it but not "/v1/ordersfoo". A trailing
-	// slash is ignored.
+	// slash is ignored, and matching is case-insensitive.
 	Paths []string
 	// Methods restricts the limiter to these HTTP methods. Empty means every
 	// method. Matching is case-insensitive.
@@ -89,8 +89,18 @@ func (l Limiter) matchesPath(path string) bool {
 	if len(l.Paths) == 0 {
 		return true
 	}
-	path = normalisePath(path)
+	// Case-folded on BOTH sides. RFC 3986 makes a URI path case-sensitive, which is
+	// correct for routing and wrong here: these paths are abuse-control scopes, and
+	// comparing them byte-for-byte lets a caller walk straight past every
+	// path-scoped limiter by varying the case. Whether "/V1/Orders" reaches the same
+	// handler is the proxy's and the application's decision, not this one -- where
+	// it does, a byte-for-byte limiter silently declines to count it.
+	//
+	// strings.ToLower returns its argument unchanged when there is nothing to fold,
+	// so ordinary lowercase traffic allocates nothing; only the evasion attempt pays.
+	path = strings.ToLower(normalisePath(path))
 	for _, p := range l.Paths {
+		p = strings.ToLower(p)
 		if base, subtree := strings.CutSuffix(p, "/*"); subtree {
 			// "/*" alone is every path. Otherwise the base itself or anything under
 			// it, matching on the separator so "/v1/x/*" excludes "/v1/xy".

@@ -152,6 +152,42 @@ func TestPathScopingSubtreeWildcard(t *testing.T) {
 	require.True(t, mixed.Applies("/v1/reports/daily", "POST"))
 }
 
+// REGRESSION: path matching was byte-for-byte, so a caller walked past every
+// path-scoped limiter simply by varying the case of the request path.
+func TestPathScopingIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	l := limiter.Limiter{Paths: []string{"/v1/orders"}}
+
+	for _, p := range []string{
+		"/v1/orders",
+		"/V1/OrDeRs",
+		"/v1/ORDERS",
+		"/V1/Orders",
+		"/v1/ORDERS/",
+	} {
+		require.True(t, l.Applies(p, "POST"), "case variation must not evade the limiter: %s", p)
+	}
+
+	// Folding must not make unrelated paths match.
+	require.False(t, l.Applies("/v1/ordersfoo", "POST"))
+	require.False(t, l.Applies("/v1", "POST"))
+
+	// An uppercase pattern works too, so the fold is genuinely two-sided.
+	up := limiter.Limiter{Paths: []string{"/V1/Charges"}}
+	require.True(t, up.Applies("/v1/charges", "POST"))
+}
+
+// The subtree wildcard folds case as well, and still respects the separator.
+func TestSubtreeWildcardIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	l := limiter.Limiter{Paths: []string{"/v1/charges/*"}}
+
+	require.True(t, l.Applies("/V1/CHARGES", "POST"))
+	require.True(t, l.Applies("/V1/Charges/Wallet", "POST"))
+	require.True(t, l.Applies("/v1/CHARGES/wallet/capture", "POST"))
+	require.False(t, l.Applies("/V1/CHARGESFOO", "POST"))
+}
+
 // A trailing slash must not quietly produce a limiter that never fires.
 func TestPathScopingIgnoresATrailingSlash(t *testing.T) {
 	t.Parallel()

@@ -136,8 +136,12 @@ paths: ["/v1/orders/*"]          # /v1/orders AND everything under it
 
 Empty means every path.
 
-**Matching is exact.** `/v1/orders` does not cover `/v1/orders/123`, and a
-trailing slash is ignored, so `/v1/orders/` is the same path. To take in a whole
+**Matching is exact, and case-insensitive.** `/v1/orders` does not cover
+`/v1/orders/123`, and a trailing slash is ignored, so `/v1/orders/` is the same path.
+Case is folded on both sides, so `/V1/Orders` matches too. A URI path is
+case-sensitive per RFC 3986, but that is the wrong default for an abuse control:
+without folding, a caller walks past every path-scoped limiter just by changing the
+case, while still reaching the same backend. To take in a whole
 subtree, opt in with a trailing `/*`: `/v1/orders/*` matches `/v1/orders` and
 everything below it, still on the separator, so it excludes `/v1/ordersfoo`. `/*`
 alone is every path. `/` is the root path only.
