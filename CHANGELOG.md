@@ -10,72 +10,30 @@ a breaking change to either is a major-version change.
 
 ## [Unreleased]
 
-### Fixed
+### Fixed — SECURITY
 
-- **`hash` and `normalise` were silently ignored on a `first` or `composite` key
-  node.** `keyer.First` and `keyer.Composite` carried neither, so the value fell
-  through unchanged and the *raw* value became the storage key.
+- **Path matching was case-sensitive, letting any caller bypass every path-scoped
+  limiter.** `paths: ["/v1/orders"]` did not match `/V1/OrDeRs`, so a case-varied
+  request matched no limiter, was never counted, and was forwarded unlimited.
+  Whether such a path reaches the same handler is the proxy's and the
+  application's decision — where it does, the limiter silently declined to count
+  it, and nothing in the metrics distinguished that from an absence of traffic.
 
-  For `hash: true` this means a credential written to be hashed was instead stored
-  verbatim in Redis, and reached the logs on any store error. For
-  `normalise: ipsubnet/24` it means the full address was kept rather than the
-  network prefix, so rotating within a network defeated the limiter — the one thing
-  that normaliser exists to prevent.
+  RFC 3986 makes a URI path case-sensitive, which is correct for routing and
+  wrong for an abuse control. Paths are now folded on both sides, matching the
+  treatment `methods` already had. `strings.ToLower` returns its input unchanged
+  when there is nothing to fold, so ordinary lowercase traffic allocates nothing.
 
-  Both now apply at the composed node: on a `first` to whichever source won, on a
-  `composite` to the joined value. Declaring them on a child still works as before.
+- **Query-parameter key lookup had the same flaw.** `url.Values.Get` is a
+  case-sensitive map lookup, so `key: {query: [api_key]}` found nothing in
+  `?API_KEY=...`; no key means the limiter is skipped rather than enforced.
+  Lookup now falls back to a folded scan. Header lookup was never affected —
+  `http.Header.Get` canonicalises its argument.
 
-  This affected the `tenant` limiter in `examples/config/multi-tenant.yaml`, so
-  anyone following that example was storing raw API keys.
-
-  **Migration:** buckets for an affected limiter change value, so its counters and
-  blocks are orphaned and age out by TTL. Expect one window of under-counting after
-  the upgrade. Any raw credential already written to Redis stays there until its key
-  expires — flush it if that matters, and note it may also sit in retained logs.
-
-### Changed — BREAKING
-
-- **`paths` now matches exactly.** Previously a path was exact-or-prefix, so
-  `paths: ["/v1/orders"]` silently also covered `/v1/orders/123` and everything
-  else beneath it. Opt into a subtree with a trailing `/*`:
-
-  ```yaml
-  paths: ["/v1/orders"]      # /v1/orders and nothing else
-  paths: ["/v1/orders/*"]    # /v1/orders AND everything under it
-  ```
-
-  **Migration:** any path relying on the old behaviour becomes `X` -> `X/*`. A path
-  naming a single endpoint needs no change. Note `paths: ["/"]` previously meant
-  every path and now means the root only; write `["/*"]` for the old meaning.
-
-  The old default failed silently, and in the direction that hurts: a limiter scoped
-  to one endpoint counted its children too, and no metric distinguished the two, so
-  it merely appeared to see more traffic than the endpoint it named. Where a subtree
-  is busier than its root — common for callback and sub-resource routes — a threshold
-  tuned against that reading can be off by an order of magnitude.
-
-### Added
-
-- **`paths` validation.** Paths were previously unchecked. A path must now be
-  absolute, and a `*` is accepted only as a trailing `/*` — `"/v1/*/signup"` and
-  `"/v1/sign*"` are refused at startup instead of being compared literally and
-  matching nothing.
-- **`methods` on a limiter** — scope a limiter to specific HTTP methods, ANDed with
-  `paths`. Matching folds case on both sides, so `methods: ["POST"]` also catches a
-  client sending `post`; folding only the configuration would leave an evasion path.
-
-  The usual reason to set it is CORS: an unscoped limiter counts the browser's
-  `OPTIONS` preflight as well as the request itself, which silently halves the
-  effective limit.
-
-  Omitting the field means every method, so existing configurations are unaffected.
-
-### Changed
-
-- The README diagram now shows the allow and limit outcomes separately, and
-  distinguishes a route with the middleware attached from one without. The previous
-  version drew ForwardAuth and the upstream forward as though they were alternatives,
-  and labelled the forward with a `200` the application never receives.
+  **Upgrade note:** buckets and stored keys are unchanged, but a limiter that was
+  silently missing traffic will now count it. Expect block and `would_block` rates
+  to rise on any path where callers were varying case — that is the fix working,
+  not a regression.
 
 ## [0.1.0] - 2026-07-29
 

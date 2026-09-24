@@ -109,6 +109,21 @@ func (r *Request) QueryValue(names ...string) (string, bool) {
 			return v, true
 		}
 	}
+
+	// url.Values is a plain map, so Get is case-sensitive. Fall back to a folded
+	// scan: a caller varying the case of a parameter name would otherwise yield no
+	// key at all, and a limiter with no key is skipped entirely rather than
+	// enforced -- the same evasion that case-sensitive path matching allowed.
+	for _, n := range names {
+		for k, vs := range r.query {
+			if len(vs) == 0 || !strings.EqualFold(k, n) {
+				continue
+			}
+			if v := strings.TrimSpace(vs[0]); v != "" {
+				return v, true
+			}
+		}
+	}
 	return "", false
 }
 
