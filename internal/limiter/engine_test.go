@@ -655,3 +655,44 @@ func TestRejectedDistinguishesVerdictFromEnforcement(t *testing.T) {
 	require.True(t, limiter.Decision{Blocked: true}.Rejected())
 	require.False(t, limiter.Decision{Blocked: true, DryRun: true}.Rejected())
 }
+
+// A body condition miss behaves like a path or method miss: no store call, nothing
+// recorded. Only requests with an empty body count against the limiter.
+func TestBodyEmptyConditionScopesLimiter(t *testing.T) {
+	t.Parallel()
+	fake := storetest.New()
+	e := limiter.NewEngine(fake, discardLogger(), limiter.Limiter{
+		Name:      "empty-body",
+		Rule:      validRule(1),
+		Keyer:     constKeyer("bucket"),
+		Methods:   []string{http.MethodPost},
+		BodyEmpty: true,
+	})
+
+	withBody := req("/v1/signup")
+	withBody.Body = []byte(`{"email":"a@example.com"}`)
+	for i := 0; i < 3; i++ {
+		d := e.Evaluate(context.Background(), withBody)
+		require.False(t, d.Blocked)
+		require.Empty(t, d.Evaluations)
+	}
+	require.Zero(t, fake.CallCount(), "a request with a body must not touch the store")
+
+	d := e.Evaluate(context.Background(), req("/v1/signup"))
+	require.False(t, d.Blocked, "the first empty body is within a limit of 1")
+	require.Len(t, d.Evaluations, 1)
+
+	emptyObject := req("/v1/signup")
+	emptyObject.Body = []byte(`{}`)
+	d = e.Evaluate(context.Background(), emptyObject)
+	require.True(t, d.Blocked, "{} counts as empty, so the second exceeds the limit")
+}
+
+func TestLimiterWithoutBodyConditionMatchesAnyBody(t *testing.T) {
+	t.Parallel()
+	l := limiter.Limiter{Name: "x"}
+	r := req("/x")
+	r.Body = []byte(`{"a":1}`)
+	require.True(t, l.Matches(r))
+	require.True(t, l.Matches(req("/x")))
+}

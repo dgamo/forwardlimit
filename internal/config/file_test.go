@@ -327,6 +327,37 @@ limiters:
     window: {limit: 5, window: 1m, block: 1m}
     methods: ["POST", "post"]
 `,
+		{"when with no condition", "no condition is set"}: `
+limiters:
+  - name: empty
+    key: {header: [CF-Connecting-IP]}
+    window: {limit: 5, window: 1m, block: 1m}
+    methods: ["POST"]
+    when: {bodyEmpty: false}
+`,
+		{"bodyEmpty without methods", "bodyEmpty requires methods"}: `
+limiters:
+  - name: empty
+    key: {header: [CF-Connecting-IP]}
+    window: {limit: 5, window: 1m, block: 1m}
+    when: {bodyEmpty: true}
+`,
+		{"bodyEmpty on a bodiless method", "never carries a body"}: `
+limiters:
+  - name: empty
+    key: {header: [CF-Connecting-IP]}
+    window: {limit: 5, window: 1m, block: 1m}
+    methods: ["POST", "get"]
+    when: {bodyEmpty: true}
+`,
+		{"unknown when condition", "field bodyMissing not found"}: `
+limiters:
+  - name: empty
+    key: {header: [CF-Connecting-IP]}
+    window: {limit: 5, window: 1m, block: 1m}
+    methods: ["POST"]
+    when: {bodyMissing: true}
+`,
 	}
 
 	for tc, body := range cases {

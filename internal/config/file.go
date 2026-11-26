@@ -49,6 +49,9 @@ type LimiterSpec struct {
 	// Methods restricts the limiter to these HTTP methods. Empty means every
 	// method. Matching is case-insensitive, and ANDed with Paths.
 	Methods []string `yaml:"methods"`
+	// When restricts the limiter to requests with a given content property,
+	// ANDed with Paths and Methods.
+	When *WhenSpec `yaml:"when"`
 	// DryRun evaluates and reports without rejecting.
 	DryRun bool `yaml:"dryRun"`
 	// RetryAfter adds a Retry-After header. For a cooperating caller, not for an
@@ -56,6 +59,14 @@ type LimiterSpec struct {
 	RetryAfter bool `yaml:"retryAfter"`
 	// Response overrides the global response for this limiter only.
 	Response *ResponseSpec `yaml:"response"`
+}
+
+// WhenSpec restricts a limiter to requests with a given content property. Every
+// condition that is set must hold.
+type WhenSpec struct {
+	// BodyEmpty applies the limiter only to requests whose body is empty: no
+	// bytes, whitespace only, or a JSON object with no members ("{}").
+	BodyEmpty bool `yaml:"bodyEmpty"`
 }
 
 // WindowSpec is a fixed window with a hard block.
@@ -194,6 +205,9 @@ func validateLimiter(i int, l LimiterSpec, seen map[string]bool, fail func(strin
 
 	validatePaths(where, l.Paths, fail)
 	validateMethods(where, l.Methods, fail)
+	if l.When != nil {
+		validateWhen(where, l.When, l.Methods, fail)
+	}
 
 	if l.Response != nil {
 		validateResponse(where+".response", l.Response, fail)
@@ -247,6 +261,35 @@ func validateMethods(where string, methods []string, fail func(string, ...any)) 
 			continue
 		}
 		seen[up] = true
+	}
+}
+
+// bodylessMethods never carry a request body, so a body condition cannot tell
+// one of them from another.
+var bodylessMethods = []string{"GET", "HEAD", "OPTIONS"}
+
+// validateWhen checks the content conditions.
+//
+// bodyEmpty must be scoped to methods that carry a body. GET, HEAD and OPTIONS
+// never do, so an unscoped bodyEmpty limiter would match every one of them -
+// every page load and CORS preflight - and once enforcing, reject them all.
+func validateWhen(where string, w *WhenSpec, methods []string, fail func(string, ...any)) {
+	if !w.BodyEmpty {
+		fail("%s.when: no condition is set; set bodyEmpty: true or remove when", where)
+		return
+	}
+	if len(methods) == 0 {
+		fail("%s.when.bodyEmpty requires methods: GET, HEAD and OPTIONS never carry a body, "+
+			"so without a method scope every one of them would match", where)
+		return
+	}
+	for _, m := range methods {
+		for _, b := range bodylessMethods {
+			if strings.EqualFold(m, b) {
+				fail("%s.when.bodyEmpty: method %q never carries a body, so every %s request "+
+					"would match; scope methods to those that send one (POST, PUT, PATCH)", where, m, b)
+			}
+		}
 	}
 }
 

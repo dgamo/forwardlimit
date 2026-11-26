@@ -187,7 +187,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	body, truncated := h.readBody(r)
+	body, truncated, unreadable := h.readBody(r)
 	if truncated {
 		// Visible rather than silent: a truncated body cannot be inspected, so
 		// body-keyed limiters will not apply to this request.
@@ -205,6 +205,9 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		Header:   r.Header,
 		Body:     body,
 		RawQuery: originalQuery(r),
+		// A read error leaves no body to inspect, which must not be mistaken
+		// for an empty one by a when.bodyEmpty limiter.
+		BodyUnavailable: unreadable,
 	}
 
 	d := h.engine.Evaluate(r.Context(), req)
@@ -271,21 +274,22 @@ func (h *Handler) record(d limiter.Decision) {
 	}
 }
 
-// readBody reads at most maxBody bytes, reporting whether more was available.
-func (h *Handler) readBody(r *http.Request) (body []byte, truncated bool) {
+// readBody reads at most maxBody bytes, reporting whether more was available and
+// whether the read failed.
+func (h *Handler) readBody(r *http.Request) (body []byte, truncated, unreadable bool) {
 	if r.Body == nil {
-		return nil, false
+		return nil, false, false
 	}
 	// Read one extra byte so truncation can be detected rather than inferred.
 	b, err := io.ReadAll(io.LimitReader(r.Body, h.maxBody+1))
 	if err != nil {
 		h.log.Warn("failed to read request body", slog.String("error", err.Error()))
-		return nil, false
+		return nil, false, true
 	}
 	if int64(len(b)) > h.maxBody {
-		return b[:h.maxBody], true
+		return b[:h.maxBody], true, false
 	}
-	return b, false
+	return b, false, false
 }
 
 // originalPath returns the path Traefik is authorising, without the query string.

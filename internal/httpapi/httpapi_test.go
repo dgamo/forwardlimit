@@ -704,3 +704,30 @@ func TestHeaderCredentialTakesPrecedenceOverQueryParam(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests,
 		h.post(t, "/v1/search?token=at_b", `{}`, hdr).Code)
 }
+
+// End to end through the handler: an empty-body limiter counts only the bodiless
+// requests, and a real payload on the same route passes untouched.
+func TestEmptyBodyLimiterCountsOnlyEmptyBodies(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, 0, limiter.Limiter{
+		Name:      "empty-body",
+		Rule:      store.Rule{Limit: 1, Window: time.Minute, Block: time.Minute},
+		Keyer:     keyer.Header{Names: []string{"CF-Connecting-IP"}},
+		Paths:     []string{"/v1/signup"},
+		Methods:   []string{http.MethodPost},
+		BodyEmpty: true,
+	})
+	ip := http.Header{"Cf-Connecting-Ip": []string{"203.0.113.9"}}
+
+	for i := 0; i < 3; i++ {
+		rec := h.post(t, "/v1/signup", `{"email":"a@example.com"}`, ip)
+		require.Equal(t, http.StatusOK, rec.Code, "a request with a body is out of scope")
+	}
+
+	require.Equal(t, http.StatusOK, h.post(t, "/v1/signup", ``, ip).Code)
+	require.Equal(t, http.StatusTooManyRequests, h.post(t, "/v1/signup", `{}`, ip).Code)
+
+	body := h.scrape(t)
+	require.Contains(t, body, `forwardlimit_decisions_total{decision="allowed",limiter="empty-body"} 1`)
+	require.Contains(t, body, `forwardlimit_decisions_total{decision="blocked",limiter="empty-body"} 1`)
+}

@@ -172,3 +172,51 @@ func TestRequestQueryValueIsCaseInsensitive(t *testing.T) {
 	_, ok := r.QueryValue("access_token")
 	require.False(t, ok)
 }
+
+func TestRequestBodyEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{"nil", nil, true},
+		{"zero bytes", []byte{}, true},
+		{"whitespace only", []byte(" \r\n\t "), true},
+		{"empty object", []byte(`{}`), true},
+		{"empty object with whitespace", []byte(" {\n} \n"), true},
+		{"object with a member", []byte(`{"email":""}`), false},
+		{"object with a null member", []byte(`{"email":null}`), false},
+		{"array", []byte(`[]`), false},
+		{"null", []byte(`null`), false},
+		{"malformed object", []byte(`{`), false},
+		{"not json", []byte(`email=a@example.com`), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := &limiter.Request{Body: tt.body}
+			require.Equal(t, tt.want, r.BodyEmpty())
+		})
+	}
+}
+
+// A body that could not be read has unknown content. Treating it as empty would let
+// a client disconnect, or any read error, trip an empty-body limiter.
+func TestRequestBodyUnavailableIsNotEmpty(t *testing.T) {
+	t.Parallel()
+	r := &limiter.Request{BodyUnavailable: true}
+	require.False(t, r.BodyEmpty())
+}
+
+// The JSON parse behind BodyEmpty is the one Field uses, so asking both costs one
+// parse and they agree.
+func TestRequestBodyEmptySharesTheParse(t *testing.T) {
+	t.Parallel()
+	r := &limiter.Request{Body: []byte(`{"email":"a@b.c"}`)}
+	require.False(t, r.BodyEmpty())
+	v, ok := r.Field("email")
+	require.True(t, ok)
+	require.Equal(t, "a@b.c", v)
+}

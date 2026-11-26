@@ -65,6 +65,7 @@ limiters:
 | `bucket` | one of | Token bucket. Mutually exclusive with `window`. |
 | `paths` | no | Paths this limiter applies to, matched **exactly**. Empty means every path. A trailing `/*` opts into the subtree. See [`paths`](#paths--scoping-to-endpoints). |
 | `methods` | no | HTTP methods this limiter applies to. Empty means every method. See [`methods`](#methods--scoping-to-http-methods). |
+| `when` | no | Conditions on the request content, ANDed with `paths` and `methods`. See [`when`](#when--conditions-on-the-request-content). |
 | `dryRun` | no | Evaluate and report without rejecting. Default `false`. |
 | `retryAfter` | no | Send `Retry-After` when this limiter rejects. Default `false`. |
 | `response` | no | Override the response for this limiter only. |
@@ -194,6 +195,48 @@ Any [RFC 9110 token](https://www.rfc-editor.org/rfc/rfc9110#name-methods) is acc
 not just the familiar verbs, so an extension method such as `PROPFIND` is valid.
 Duplicates within one limiter are rejected, since after case folding they are the same
 filter written twice.
+
+### `when` — conditions on the request content
+
+```yaml
+paths: ["/v1/signup"]
+methods: ["POST"]
+when: {bodyEmpty: true}
+```
+
+`when` narrows a limiter beyond its path and method, to requests with a given
+content property. It is ANDed with `paths` and `methods`, and a miss is skipped
+exactly as a path miss is: no store call, no counter increment, nothing recorded.
+
+| Condition | Matches |
+|---|---|
+| `bodyEmpty: true` | A body with no payload: zero bytes, whitespace only, or a JSON object with no members (`{}`). |
+
+It exists because **the key cannot say this**. Every key source skips the limiter
+when its value is absent, so a limiter keyed on `body: email` never sees a
+request without one. That is the right default for a key, and exactly wrong for a
+control whose target is the request with nothing in it. `when: {bodyEmpty: true}`
+selects those requests; the key then decides how they are counted, typically per
+client IP.
+
+What does **not** count as empty: an array, `null`, a malformed document (each is a
+payload, if not a useful one, and the application's to reject), a body truncated at
+`MAX_BODY_BYTES`, and a body that could not be read at all (its content is unknown).
+
+Two guards, both enforced at startup:
+
+- **`methods` is required, and may not include `GET`, `HEAD` or `OPTIONS`.** Those
+  never carry a body, so without a method scope every page load and CORS preflight
+  on the path would match — and, once enforcing, be rejected.
+- **`when` must set a condition.** `when: {bodyEmpty: false}` is rejected rather than
+  read as "no condition", so a half-edited flag cannot silently widen a limiter.
+
+> **Requires `forwardBody: true` on the middleware**, as any body-keyed limiter does
+> — but here the failure is the opposite way round. A body-keyed limiter without
+> the body silently does nothing; a `bodyEmpty` limiter without the body sees
+> *every* request as empty and matches all of them. Ship it with `dryRun: true`
+> and confirm the `allowed` + `would_block` rate is a small fraction of the route's
+> traffic before enforcing.
 
 ## Key specification
 

@@ -10,6 +10,16 @@ a breaking change to either is a major-version change.
 
 ## [Unreleased]
 
+### Added
+
+- **`when: {bodyEmpty: true}`** restricts a limiter to requests whose body is
+  empty: zero bytes, whitespace only, or `{}`. No key could express this, because
+  every key source skips the limiter when its value is absent, so a request with
+  nothing in it was invisible to every body-keyed limiter. Scoped by `methods`,
+  which it requires, and which may not include `GET`, `HEAD` or `OPTIONS`. A body
+  that could not be read is not treated as empty. See
+  [configuration.md](docs/configuration.md#when--conditions-on-the-request-content).
+
 ### Fixed — SECURITY
 
 - **Path matching was case-sensitive, letting any caller bypass every path-scoped
