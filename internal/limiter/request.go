@@ -25,6 +25,9 @@ type Request struct {
 	// It matters because a credential may arrive as a query parameter rather than
 	// a header; keying only on headers would leave those callers unlimited.
 	RawQuery string
+	// BodyUnavailable reports that the body could not be read, so its content is
+	// unknown. Such a body is never treated as empty.
+	BodyUnavailable bool
 
 	parseOnce sync.Once
 	obj       map[string]any
@@ -72,6 +75,28 @@ func (r *Request) Field(name string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// BodyEmpty reports whether the request carries no payload: no bytes, whitespace
+// only, or a JSON object with no members ("{}").
+//
+// A body that could not be read is not empty, because its content is unknown, and a
+// truncated one is not empty by definition. Anything else non-blank - an array,
+// null, a malformed document - is a payload, if not a useful one, and is left to
+// the application to reject.
+func (r *Request) BodyEmpty() bool {
+	if r.BodyUnavailable {
+		return false
+	}
+	b := bytes.TrimSpace(r.Body)
+	if len(b) == 0 {
+		return true
+	}
+	if b[0] != '{' {
+		return false
+	}
+	r.parseOnce.Do(r.parse)
+	return r.obj != nil && len(r.obj) == 0
 }
 
 func (r *Request) parse() {

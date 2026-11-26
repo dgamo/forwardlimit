@@ -55,6 +55,13 @@ type Limiter struct {
 	// matches and the method matches. Scoping to POST is what keeps a CORS
 	// preflight from spending the caller's budget.
 	Methods []string
+	// BodyEmpty restricts the limiter to requests whose body is empty, as
+	// Request.BodyEmpty defines it. ANDed with Paths and Methods.
+	//
+	// Only meaningful when the proxy forwards the body. Without Traefik's
+	// forwardBody every request reaches the sidecar bodiless, so every request
+	// would match.
+	BodyEmpty bool
 	// DryRun evaluates fully - the store is called, counters increment - but
 	// suppresses enforcement, so a request that would have been rejected is allowed.
 	// That fidelity is the point: the projection has to match what enforcement
@@ -77,6 +84,13 @@ func (l Limiter) Active() bool { return l.Rule.Valid() || l.Bucket.Valid() }
 // match. An unscoped limiter applies to everything.
 func (l Limiter) Applies(path, method string) bool {
 	return l.matchesPath(path) && l.matchesMethod(method)
+}
+
+// Matches reports whether the request meets the limiter's content conditions. It is
+// separate from Applies because it may parse the body, so it runs only once the
+// cheap path and method checks have passed.
+func (l Limiter) Matches(r *Request) bool {
+	return !l.BodyEmpty || r.BodyEmpty()
 }
 
 // matchesPath reports whether the limiter is scoped to the given request path.

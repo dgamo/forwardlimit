@@ -65,6 +65,7 @@ Consequences worth noting:
 for each limiter:
     skip if the path is out of scope
     skip if the rule is invalid          (a zero limit/window/block disables it)
+    skip if a when condition misses      (e.g. bodyEmpty, and the body has content)
     skip if the keyer does not apply     (e.g. the body field is absent)
     consume from the store:
         error   -> record failed_open, CONTINUE to the next limiter

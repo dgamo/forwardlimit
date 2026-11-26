@@ -103,6 +103,7 @@ func (f *File) Build(hashSecret string) (*Built, error) {
 			Keyer:            k,
 			Paths:            spec.Paths,
 			Methods:          spec.Methods,
+			BodyEmpty:        spec.When != nil && spec.When.BodyEmpty,
 			DryRun:           spec.DryRun,
 			AdviseRetryAfter: spec.RetryAfter,
 		}

@@ -459,3 +459,24 @@ limiters:
 	require.Equal(t, "text/html", b.Responses["signup"].ContentType)
 	require.Equal(t, []byte("<html>slow down</html>"), b.Responses["signup"].Body)
 }
+
+func TestWhenBodyEmptyIsBuilt(t *testing.T) {
+	t.Parallel()
+
+	b := build(t, `
+limiters:
+  - name: empty-body
+    key: {header: [CF-Connecting-IP]}
+    window: {limit: 1, window: 1m, block: 1h}
+    paths: ["/v1/signup"]
+    methods: ["POST"]
+    when: {bodyEmpty: true}
+    dryRun: true
+  - name: plain
+    key: {header: [CF-Connecting-IP]}
+    window: {limit: 1, window: 1m, block: 1h}
+`, testSecret)
+
+	require.True(t, b.Limiters[0].BodyEmpty)
+	require.False(t, b.Limiters[1].BodyEmpty, "an omitted when must leave the limiter unconditioned")
+}
